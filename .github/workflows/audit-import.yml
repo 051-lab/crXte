@@ -6,7 +6,7 @@ on:
       - ".github/workflows/audit-import.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   audit:
@@ -18,11 +18,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          : > .import/audit-report.txt
           for file in .import/part_*; do
-            printf '%s bytes=' "$file"
-            wc -c < "$file" | tr -d ' \n'
-            printf ' git='
-            git hash-object "$file"
-            printf ' sha256='
-            sha256sum "$file" | cut -d' ' -f1
+            bytes="$(wc -c < "$file" | tr -d ' \n')"
+            git_sha="$(git hash-object "$file")"
+            sha256="$(sha256sum "$file" | cut -d' ' -f1)"
+            printf '%s bytes=%s git=%s sha256=%s\n' "$file" "$bytes" "$git_sha" "$sha256" | tee -a .import/audit-report.txt
           done
+
+      - name: Commit audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .import/audit-report.txt
+          git commit -m "chore: record staged payload audit"
+          git push
