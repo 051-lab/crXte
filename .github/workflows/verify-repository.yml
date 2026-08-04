@@ -1,0 +1,79 @@
+name: Verify imported repository
+
+on:
+  push:
+    paths:
+      - ".github/workflows/verify-repository.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify source tree
+        id: source
+        shell: bash
+        run: |
+          if [ -f pyproject.toml ] && [ -f uv.lock ] && [ -f src/x_media_downloader/app.py ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: astral-sh/setup-uv@v6
+        if: steps.source.outputs.present == 'true'
+
+      - name: Install locked environment
+        if: steps.source.outputs.present == 'true'
+        id: install
+        continue-on-error: true
+        run: uv sync --locked --all-extras --dev
+
+      - name: Compile Python source
+        if: steps.source.outputs.present == 'true' && steps.install.outcome == 'success'
+        id: compile
+        continue-on-error: true
+        run: uv run python -m compileall -q src
+
+      - name: Run tests
+        if: steps.source.outputs.present == 'true' && steps.install.outcome == 'success'
+        id: tests
+        continue-on-error: true
+        run: uv run pytest -q
+
+      - name: Write verification status
+        shell: bash
+        run: |
+          source_present='${{ steps.source.outputs.present }}'
+          install_outcome='${{ steps.install.outcome }}'
+          compile_outcome='${{ steps.compile.outcome }}'
+          tests_outcome='${{ steps.tests.outcome }}'
+          if [ "$source_present" = 'true' ] && [ "$install_outcome" = 'success' ] && [ "$compile_outcome" = 'success' ] && [ "$tests_outcome" = 'success' ]; then
+            result='PASS'
+          else
+            result='FAIL'
+          fi
+          cat > IMPORT_STATUS.md <<EOF
+          # crXte repository import status
+
+          **Result:** $result
+
+          - Source tree present: $source_present
+          - Locked dependency installation: $install_outcome
+          - Python compilation: $compile_outcome
+          - Test suite: $tests_outcome
+          - Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+      - name: Commit status
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add IMPORT_STATUS.md
+          git commit -m "chore: record repository import verification"
+          git push
