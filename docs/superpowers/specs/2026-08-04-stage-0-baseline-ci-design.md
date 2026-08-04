@@ -55,7 +55,14 @@ The two import branches are deleted only after:
 2. the Stage 0 CI pull request has merged successfully;
 3. `main` has passed the permanent CI workflow.
 
-Deleting the branch references does not delete the referenced commits from Git history immediately; the baseline commit remains permanently named by `v0.3.0`.
+Deletion is performed with authenticated Git commands or the equivalent GitHub ref API operation:
+
+```bash
+git push origin --delete source-import-final
+git push origin --delete finalize-source-import
+```
+
+Deleting the branch references does not immediately delete the referenced commits from Git object storage; the clean baseline remains permanently named by `v0.3.0`.
 
 ## 5. CI workflow design
 
@@ -141,12 +148,12 @@ The job runs these gates in order:
 ```bash
 uv run --locked ruff check .
 uv run --locked pytest
-python -m compileall -q src tests
+uv run --locked python -m compileall -q src tests
 ```
 
 The complete pytest suite is mandatory. No test file is ignored, deselected, or marked as allowed to fail during Stage 0.
 
-`compileall` runs after tests so syntax and importable bytecode coverage is explicitly verified for both production code and tests. Generated `__pycache__` directories exist only in the ephemeral runner and are never committed.
+`compileall` runs after tests through the locked Python 3.12 environment. It explicitly verifies syntax and bytecode compilation for both production code and tests. Generated `__pycache__` directories exist only in the ephemeral runner and are never committed.
 
 ## 6. Failure handling
 
@@ -209,9 +216,15 @@ It must point exactly to:
 5261eb4d864cfc50e6d59b2b05cdad7be9b45210
 ```
 
-The tag records the clean imported application before the permanent CI workflow is added. It is not moved later.
+The tag records the clean imported application before the permanent CI workflow is added. It is never moved or recreated at a different commit.
 
-An annotated tag is preferred. Its message should identify it as the verified imported crXte baseline.
+Create and publish an annotated tag with authenticated Git commands or the equivalent GitHub Git-data API operations:
+
+```bash
+git tag -a v0.3.0 5261eb4d864cfc50e6d59b2b05cdad7be9b45210 \
+  -m "Verified imported crXte v0.3.0 baseline"
+git push origin v0.3.0
+```
 
 ## 9. Merge and cleanup order
 
@@ -242,7 +255,7 @@ Stage 0 is complete only with evidence of all of the following:
 - the post-merge `main` CI run succeeded;
 - Ruff passed;
 - the complete pytest suite passed, with the exact test count recorded;
-- `compileall` passed for `src` and `tests`;
+- `compileall` passed for `src` and `tests` through the locked Python environment;
 - no test exclusions were introduced;
 - no importer workflow or importer directory returned to `main`;
 - the two obsolete import branches no longer exist;
