@@ -1,0 +1,91 @@
+name: Finalize verified source import
+
+on:
+  push:
+    paths:
+      - '.github/workflows/finalize-source-import.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and reconstruct source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          declare -A expected=(
+            [archive-00.b64]=eae0bf5080ed47b3c935b284eb4c2dd2dc98bf389450b891e47beedc879fad29
+            [archive-01.b64]=1dcd1d4c5d9fbecc53515d283925686f16d5bb930d6b3211318e12238bdfdfb1
+            [archive-02.b64]=d10687ea352c56ba633fb0e8d35b2cbc8f70e89b28dd83ab84d6545f0f7b78e6
+            [archive-03.b64]=431497e93f748f2ef829342d09b4246b189521896179b50cce6958fc2ece13ea
+            [archive-04.b64]=7d0c9f78c883485c889a22e1fdce466ce1d88bf6466531f610699718b4264aed
+            [archive-05.b64]=ce31b5ac215e8efe7c6e78b89aed035b1ae84edfbd42620fbd2161ae3e2666c3
+            [archive-06.b64]=9b3aa0f688d925a7c26152a8a55017f4fece9917f936d6538ec68c0a38b3c936
+          )
+
+          for file in "${!expected[@]}"; do
+            path=".source-import/$file"
+            test -f "$path"
+            actual="$(sha256sum "$path" | awk '{print $1}')"
+            test "$actual" = "${expected[$file]}"
+          done
+
+          cat .source-import/archive-*.b64 > /tmp/crxte-source.b64
+          base64 --decode /tmp/crxte-source.b64 > /tmp/crxte-source.tar.xz
+          echo '040da8057dacd3083c5b372f60f9760db0fab6eabb7e3dcd0a69c2f89c5e3941  /tmp/crxte-source.tar.xz' | sha256sum --check --strict
+
+          mkdir -p /tmp/crxte-unpacked
+          tar -xJf /tmp/crxte-source.tar.xz -C /tmp/crxte-unpacked
+
+          test -f /tmp/crxte-unpacked/crXte/pyproject.toml
+          test -f /tmp/crxte-unpacked/crXte/uv.lock
+          test -f /tmp/crxte-unpacked/crXte/run.sh
+          test -f /tmp/crxte-unpacked/crXte/src/x_media_downloader/app.py
+          test -d /tmp/crxte-unpacked/crXte/tests
+
+      - name: Restore bundled DejaVu Sans font
+        shell: bash
+        run: |
+          set -euo pipefail
+          font='/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+          if [ ! -f "$font" ]; then
+            sudo apt-get update
+            sudo apt-get install -y fonts-dejavu-core
+          fi
+          mkdir -p /tmp/crxte-unpacked/crXte/src/x_media_downloader/assets
+          cp "$font" /tmp/crxte-unpacked/crXte/src/x_media_downloader/assets/DejaVuSans.ttf
+          test -s /tmp/crxte-unpacked/crXte/src/x_media_downloader/assets/DejaVuSans.ttf
+
+      - name: Replace temporary repository tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a /tmp/crxte-unpacked/crXte/. .
+          rm -rf .import .source-import .github/workflows
+          chmod +x run.sh
+
+          ! find . -type d \( -name screenshots -o -name .venv -o -name __pycache__ -o -name .pytest_cache \) -print -quit | grep -q .
+          ! find . -type f \( -name '.env' -o -name '*.pyc' -o -name '*:Zone.Identifier' \) -print -quit | grep -q .
+          python -m compileall -q src
+
+      - name: Commit verified project source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git commit -m 'chore: import verified crXte source'
+          git push origin HEAD:main
