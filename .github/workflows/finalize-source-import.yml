@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - '.github/workflows/finalize-source-import.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
