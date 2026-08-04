@@ -1,1 +1,1 @@
-Trigger checksum-gated source reconstruction with official DejaVu Sans 2.37.
+Trigger final verified crXte source reconstruction and clean commit.
