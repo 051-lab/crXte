@@ -1,1 +1,1 @@
-Trigger checksum diagnostics and final source reconstruction.
+Trigger checksum diagnostics and exact staged-source artifact export.
