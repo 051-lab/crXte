@@ -14,17 +14,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Report staged segment integrity
+      - name: Locate mismatched blocks
         shell: bash
         run: |
           set -euo pipefail
-          : > .import/audit-report.txt
-          for file in .import/part_*; do
-            bytes="$(wc -c < "$file" | tr -d ' \n')"
-            git_sha="$(git hash-object "$file")"
-            sha256="$(sha256sum "$file" | cut -d' ' -f1)"
-            printf '%s bytes=%s git=%s sha256=%s\n' "$file" "$bytes" "$git_sha" "$sha256" | tee -a .import/audit-report.txt
-          done
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('.import/block-hashes.json').read_text())
+          block_size = manifest['block_size']
+          report = {'block_size': block_size, 'parts': {}}
+          for name, expected in manifest['parts'].items():
+              path = Path('.import') / name
+              data = path.read_bytes()
+              actual_blocks = [
+                  hashlib.sha256(data[offset:offset + block_size]).hexdigest()
+                  for offset in range(0, len(data), block_size)
+              ]
+              expected_blocks = expected['blocks']
+              mismatches = [
+                  index
+                  for index in range(max(len(actual_blocks), len(expected_blocks)))
+                  if index >= len(actual_blocks)
+                  or index >= len(expected_blocks)
+                  or actual_blocks[index] != expected_blocks[index]
+              ]
+              report['parts'][name] = {
+                  'actual_length': len(data),
+                  'expected_length': expected['length'],
+                  'actual_sha256': hashlib.sha256(data).hexdigest(),
+                  'expected_sha256': expected['sha256'],
+                  'mismatched_blocks': mismatches,
+              }
+          Path('.import/block-audit-report.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          print(Path('.import/block-audit-report.json').read_text())
+          PY
 
       - name: Commit audit report
         shell: bash
@@ -32,6 +60,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .import/audit-report.txt
-          git commit -m "chore: record staged payload audit"
+          git add .import/block-audit-report.json
+          git commit -m "chore: locate staged payload differences"
           git push
