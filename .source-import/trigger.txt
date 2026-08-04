@@ -1,1 +1,1 @@
-Trigger checksum diagnostics and exact staged-source artifact export.
+Trigger checksum diagnostics and hidden staged-source artifact export.
