@@ -1,8 +1,0 @@
-http=200
-size=913360
-sha256=2f0e62781aa7693e50e44c95033e51b326d0fcc3793bf2f45e6ebdd134b9f7c6
-type=HTML document, ASCII text, with very long lines (65536), with no line terminators
-PCFkb2N0eXBlIGh0bWw+PGh0bWwgbGFuZz0iZW4tVVMiIGRpcj0ibHRyIj48aGVhZD48YmFzZSBo
-cmVmPSJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20vdjMvc2lnbmluLyI+PGxpbmsgcmVsPSJw
-cmVjb25uZWN0IiBocmVmPSIvL3d3dy5nc3RhdGljLmNvbSI+PG1ldGEgbmFtZT0icmVmZXJyZXIi
-IGNvbnRlbnQ9Im9yaWdpbiI+PHN0eWxlIGRhdGE=

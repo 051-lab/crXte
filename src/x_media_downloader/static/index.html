@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0d0c">
+  <title>crXte · local X post exporter</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23090b0a'/%3E%3Cpath d='M13 15h11l9 12 8-12h10L38 33l14 16H41L32 38l-8 11H13l14-18z' fill='%23c8ff3d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="crXte home">
+      <span class="brand-mark">crXte</span>
+      <span class="brand-copy">local X post exporter</span>
+    </a>
+    <div class="system-state">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="system-label">Checking system</span>
+      <button class="text-button" id="settings-button" type="button">Settings</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="workspace" aria-labelledby="workspace-title">
+      <div class="workspace-heading">
+        <div>
+          <p class="eyebrow">Public X posts · local only</p>
+          <h1 id="workspace-title">Paste the post.<br><span>Choose the output.</span></h1>
+        </div>
+        <p class="intro">Save public posts and X Articles as media, clean Markdown, or a print-ready PDF—directly to your computer.</p>
+      </div>
+
+      <form class="command-line" id="analyze-form">
+        <label class="sr-only" for="url-input">Public X post URL</label>
+        <span class="prompt" aria-hidden="true">→</span>
+        <input id="url-input" name="url" type="url" inputmode="url" autocomplete="url"
+          placeholder="https://x.com/account/status/…" required>
+        <button class="primary-button" id="analyze-button" type="submit">
+          <span>Analyze link</span><span class="button-key">↵</span>
+        </button>
+      </form>
+      <div class="command-meta">
+        <span>No account or cookies</span>
+        <span>Media · Markdown · PDF</span>
+        <span>Pause + resume supported</span>
+      </div>
+
+      <section class="empty-state" id="empty-state">
+        <div class="empty-index">00</div>
+        <div>
+          <h2>Awaiting a post link</h2>
+          <p>The inspector will identify the post or article, then let you choose media, Markdown, PDF, or any combination before exporting.</p>
+        </div>
+      </section>
+
+      <section class="analysis-panel" id="analysis-panel" hidden aria-live="polite">
+        <header class="post-header">
+          <div class="post-identity">
+            <p class="eyebrow">Post resolved</p>
+            <h2 id="post-author"></h2>
+            <p id="post-handle"></p>
+          </div>
+          <div class="post-id" id="post-id"></div>
+        </header>
+        <p class="post-text" id="post-text"></p>
+        <section class="article-summary" id="article-summary" aria-labelledby="article-title" hidden>
+          <p class="eyebrow">X Article</p>
+          <h3 id="article-title"></h3>
+          <p id="article-description"></p>
+        </section>
+
+        <section class="output-destination" aria-labelledby="output-folder-label">
+          <div>
+            <span id="output-folder-label">Post folder</span>
+            <strong id="output-folder">Loading…</strong>
+          </div>
+          <p>Selected media is stored once in <code>media/</code>. Markdown links to it; PDF embeds images, while videos remain separate links.</p>
+        </section>
+
+        <fieldset class="output-picker">
+          <legend>Choose outputs</legend>
+          <div class="output-grid">
+            <label class="output-card">
+              <input id="output-media" name="output" type="checkbox" value="media" checked>
+              <span>
+                <strong>Media</strong>
+                <small>Original photos and best-quality video</small>
+              </span>
+            </label>
+            <label class="output-card">
+              <input id="output-markdown" name="output" type="checkbox" value="markdown">
+              <span>
+                <strong>Markdown</strong>
+                <small>Portable post or article document</small>
+              </span>
+            </label>
+            <label class="output-card">
+              <input id="output-pdf" name="output" type="checkbox" value="pdf">
+              <span>
+                <strong>PDF</strong>
+                <small>Print-ready post or article document</small>
+              </span>
+            </label>
+          </div>
+          <label class="document-media-option" id="document-media-option" hidden>
+            <input id="include-document-media" type="checkbox" checked>
+            <span><strong>Include selected attachments</strong><small>Store selected files in media/, link them from Markdown, and embed images in PDF. Videos remain separate links.</small></span>
+          </label>
+        </fieldset>
+
+        <div class="attachment-heading" id="attachment-heading">
+          <h3>Media manifest</h3>
+          <button class="text-button" id="toggle-all" type="button">Clear all</button>
+        </div>
+        <div class="attachments" id="attachments"></div>
+        <p class="no-attachments" id="no-attachments" hidden>This post has no separate media attachments. You can still export Markdown or PDF.</p>
+        <footer class="analysis-footer">
+          <div>
+            <span class="summary-label">Export plan</span>
+            <strong id="selection-summary" aria-live="polite">—</strong>
+          </div>
+          <button class="primary-button wide" id="download-button" type="button">Add export to queue</button>
+        </footer>
+      </section>
+    </section>
+
+    <aside class="queue-rail" aria-labelledby="queue-title">
+      <header class="rail-header">
+        <div>
+          <p class="eyebrow">Persistent jobs</p>
+          <h2 id="queue-title">Transfer queue</h2>
+        </div>
+        <span class="job-count" id="job-count" aria-live="polite">0 active</span>
+      </header>
+      <div class="rail-destination">
+        <span>Export root</span>
+        <strong id="download-path">Loading…</strong>
+      </div>
+      <div class="queue-empty" id="queue-empty">
+        <span>Queue clear</span>
+        <p>New exports will wait here, then save into organized author and post folders one at a time.</p>
+      </div>
+      <div class="job-list" id="job-list"></div>
+      <footer class="rail-footer">
+        <span>Verified local files</span>
+        <span class="rail-rule"></span>
+        <span>127.0.0.1</span>
+      </footer>
+    </aside>
+  </main>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog" class="settings-panel" id="settings-form">
+      <header>
+        <div>
+          <p class="eyebrow">Runtime preferences</p>
+          <h2 id="settings-title">Settings</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close settings">×</button>
+      </header>
+      <label for="download-dir">Export root</label>
+      <input id="download-dir" type="text" spellcheck="false" required>
+      <p class="field-note">Use an absolute WSL path. crXte creates an <code>@handle/post-id/</code> folder inside this root; existing flat exports are not moved.</p>
+      <label for="fragments">Concurrent video fragments</label>
+      <select id="fragments">
+        <option value="1">1 · conservative</option>
+        <option value="2">2</option>
+        <option value="4">4 · balanced</option>
+        <option value="6">6</option>
+        <option value="8">8 · fastest</option>
+      </select>
+      <div class="dialog-actions">
+        <button class="secondary-button" value="cancel">Cancel</button>
+        <button class="primary-button" id="save-settings" value="default">Save settings</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
