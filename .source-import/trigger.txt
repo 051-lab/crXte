@@ -1,0 +1,1 @@
+Trigger checksum diagnostics and final source reconstruction.
