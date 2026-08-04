@@ -1,0 +1,28 @@
+name: Audit staged import
+
+on:
+  push:
+    paths:
+      - ".github/workflows/audit-import.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report staged segment integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in .import/part_*; do
+            printf '%s bytes=' "$file"
+            wc -c < "$file" | tr -d ' \n'
+            printf ' git='
+            git hash-object "$file"
+            printf ' sha256='
+            sha256sum "$file" | cut -d' ' -f1
+          done
