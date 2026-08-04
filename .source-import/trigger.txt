@@ -1,1 +1,1 @@
-Trigger checksum-gated source reconstruction and clean-tree commit.
+Trigger checksum-gated source reconstruction with official DejaVu Sans 2.37.
