@@ -20,7 +20,7 @@
 - Permanent workflow permissions: `contents: read` only.
 - Long-lived branch after cleanup: `main` only.
 - Any reproducibility correction must be the smallest possible separate commit and must preserve intended behavior.
-- Official action majors verified on 2026-08-06: `actions/checkout@v7`, `actions/setup-python@v7`, and `astral-sh/setup-uv@v9`.
+- Official action majors verified on 2026-08-06: `actions/checkout@v7`, `actions/setup-python@v7`, and `astral-sh/setup-uv@v9.0.0`.
 
 ---
 
@@ -97,7 +97,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           version: "0.11.30"
           enable-cache: true
