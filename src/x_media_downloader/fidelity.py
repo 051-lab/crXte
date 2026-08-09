@@ -34,6 +34,7 @@ from pypdf import PdfReader
 
 from .documents import Block, DocumentMedia, Text, document_blocks
 from .models import Analysis
+from .models import FidelityIssue as JobIssue
 
 _WARNING_MARKERS = {
     "unsupported-block",
@@ -115,6 +116,23 @@ def _merge(*reports: FidelityReport) -> FidelityReport:
     return FidelityReport(
         tuple(issue for report in reports for issue in report.issues)
     )
+
+
+def as_job_issues(report: FidelityReport, *, limit: int = 500) -> list[JobIssue]:
+    """Convert a report into the serializable job issue records, newest first."""
+    return [
+        JobIssue(
+            severity=issue.severity,
+            stage=issue.stage,
+            source_type=issue.source_type,
+            block_index=issue.block_index,
+            entity_type=issue.entity_type,
+            message=issue.message,
+            content_preview=issue.content_preview,
+        )
+        for issue in reversed(report.issues)
+        if issue.severity in {"warning", "error"}
+    ][:limit]
 
 
 def _issue(

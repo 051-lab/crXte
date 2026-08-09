@@ -31,12 +31,14 @@ from .extractors import (
     find_resolved_item,
     resolve_gallery_media,
 )
+from .fidelity import FidelityReport, as_job_issues, evaluate_export
 from .layout import LayoutError, build_export_layout, media_filename
 from .models import (
     Analysis,
     Attachment,
     AttachmentRole,
     AttachmentSelection,
+    ContentKind,
     Job,
     JobStatus,
     MediaType,
@@ -65,6 +67,14 @@ YTDLP_PROGRESS_TEMPLATE = (
 def ytdlp_progress_arguments() -> list[str]:
     # --print implies quiet mode in yt-dlp, so --progress must be explicit.
     return ["--newline", "--progress", "--progress-template", YTDLP_PROGRESS_TEMPLATE]
+
+
+def _phase_with_fidelity(completed_count: int, report: FidelityReport) -> str:
+    phase = f"Complete · {completed_count} output(s)"
+    summary = report.summary()
+    if summary != "no fidelity issues":
+        phase += f" · {summary}"
+    return phase
 
 
 @contextmanager
@@ -463,16 +473,20 @@ class DownloadQueue:
 
             job.current_attachment = None
             document_media = media_paths if job.include_document_media else {}
+            markdown_bytes: bytes | None = None
+            pdf_bytes: bytes | None = None
             if OutputFormat.MARKDOWN in outputs:
                 await self._checkpoint()
                 job.phase = "Rendering Markdown"
                 self.database.save_job(job)
-                markdown = await asyncio.to_thread(render_markdown, analysis, document_media)
+                markdown_bytes = await asyncio.to_thread(
+                    render_markdown, analysis, document_media
+                )
                 await self._checkpoint()
                 await asyncio.to_thread(
                     self._write_document,
                     layout.markdown_path,
-                    markdown,
+                    markdown_bytes,
                     verify_markdown,
                     list(document_media.values()),
                 )
@@ -484,17 +498,24 @@ class DownloadQueue:
                 await self._checkpoint()
                 job.phase = "Rendering PDF"
                 self.database.save_job(job)
-                pdf = await asyncio.to_thread(render_pdf, analysis, document_media)
+                pdf_bytes = await asyncio.to_thread(render_pdf, analysis, document_media)
                 await self._checkpoint()
                 await asyncio.to_thread(
-                    self._write_document, layout.pdf_path, pdf, verify_pdf
+                    self._write_document, layout.pdf_path, pdf_bytes, verify_pdf
                 )
                 if str(layout.pdf_path) not in job.completed_files:
                     job.completed_files.append(str(layout.pdf_path))
                 self._complete_step(job, completed_bytes)
 
+            fidelity_report = await self._audit_fidelity(
+                analysis, media_paths, markdown_bytes, pdf_bytes
+            )
+            job.fidelity_issues = as_job_issues(fidelity_report)
+
             job.status = JobStatus.COMPLETED
-            job.phase = f"Complete · {len(job.completed_files)} output(s)"
+            job.phase = _phase_with_fidelity(
+                len(job.completed_files), fidelity_report
+            )
             job.progress = 100
             job.speed = None
             job.eta = None
@@ -703,17 +724,21 @@ class DownloadQueue:
 
             job.current_attachment = None
             base = document_base(analysis)
+            markdown_bytes: bytes | None = None
+            pdf_bytes: bytes | None = None
             if OutputFormat.MARKDOWN in outputs:
                 await self._checkpoint()
                 job.phase = "Rendering Markdown"
                 self.database.save_job(job)
-                markdown = await asyncio.to_thread(render_markdown, analysis, document_media)
+                markdown_bytes = await asyncio.to_thread(
+                    render_markdown, analysis, document_media
+                )
                 await self._checkpoint()
                 target = destination / f"{base}.md"
                 await asyncio.to_thread(
                     self._write_document,
                     target,
-                    markdown,
+                    markdown_bytes,
                     verify_markdown,
                     list(document_media.values()),
                 )
@@ -725,11 +750,11 @@ class DownloadQueue:
                 await self._checkpoint()
                 job.phase = "Rendering PDF"
                 self.database.save_job(job)
-                pdf = await asyncio.to_thread(render_pdf, analysis, document_media)
+                pdf_bytes = await asyncio.to_thread(render_pdf, analysis, document_media)
                 await self._checkpoint()
                 target = destination / f"{base}.pdf"
                 await asyncio.to_thread(
-                    self._write_document, target, pdf, verify_pdf
+                    self._write_document, target, pdf_bytes, verify_pdf
                 )
                 if str(target) not in job.completed_files:
                     job.completed_files.append(str(target))
@@ -737,8 +762,14 @@ class DownloadQueue:
 
             if temporary_assets and temporary_assets.is_dir():
                 shutil.rmtree(temporary_assets)
+            fidelity_report = await self._audit_fidelity(
+                analysis, document_media, markdown_bytes, pdf_bytes
+            )
+            job.fidelity_issues = as_job_issues(fidelity_report)
             job.status = JobStatus.COMPLETED
-            job.phase = f"Complete · {len(job.completed_files)} output(s)"
+            job.phase = _phase_with_fidelity(
+                len(job.completed_files), fidelity_report
+            )
             job.progress = 100
             job.speed = None
             job.eta = None
@@ -780,6 +811,22 @@ class DownloadQueue:
         if job.total_steps:
             job.progress = min(99.9, job.completed_steps / job.total_steps * 100)
         self.database.save_job(job)
+
+    async def _audit_fidelity(
+        self,
+        analysis: Analysis,
+        media_paths: dict[str, Path],
+        markdown_bytes: bytes | None,
+        pdf_bytes: bytes | None,
+    ) -> FidelityReport:
+        if analysis.content_kind != ContentKind.ARTICLE:
+            return FidelityReport()
+        if markdown_bytes is None and pdf_bytes is None:
+            return FidelityReport()
+        await self._checkpoint()
+        return await asyncio.to_thread(
+            evaluate_export, analysis, media_paths, markdown_bytes, pdf_bytes
+        )
 
     async def _materialize_asset(
         self, job: Job, attachment: Attachment, source: Path, target: Path

@@ -11,8 +11,10 @@ import x_media_downloader.queue as queue_module
 from x_media_downloader.database import Database
 from x_media_downloader.models import (
     Analysis,
+    ArticleMetadata,
     Attachment,
     AttachmentSelection,
+    ContentKind,
     Job,
     JobStatus,
     MediaType,
@@ -150,6 +152,63 @@ async def test_markdown_only_text_post_completes_without_attachments(
     assert completed.total_steps == 1
     assert (tmp_path / "@writer_42.md").read_text() == "# A useful post\n"
     assert completed.completed_files == [str(tmp_path / "@writer_42.md")]
+    assert completed.fidelity_issues == []
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_article_export_records_fidelity_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "state.db")
+    analysis = Analysis(
+        id="analysis-article",
+        url="https://x.com/i/web/status/42",
+        post=PostMetadata(
+            post_id="42", author_name="Writer", author_handle="writer"
+        ),
+        attachments=[],
+        content_kind=ContentKind.ARTICLE,
+        article=ArticleMetadata(
+            id="art-1",
+            title="Intro",
+            html="<h1>Heading</h1><p>Lead paragraph.</p>",
+        ),
+    )
+    database.save_analysis(analysis)
+    job = Job(
+        id="job-article",
+        analysis_id=analysis.id,
+        url=analysis.url,
+        post=analysis.post,
+        article=analysis.article,
+        content_kind=ContentKind.ARTICLE,
+        selections=[],
+        outputs=[OutputFormat.MARKDOWN],
+        destination=str(tmp_path),
+    )
+    database.save_job(job)
+    monkeypatch.setattr(queue_module, "document_base", lambda _: "@writer_42")
+    monkeypatch.setattr(
+        queue_module,
+        "render_markdown",
+        lambda *_: b"# Intro\n\nBy Writer (@writer)\nSource: <https://x.com/i/web/status/42>\n",
+    )
+    monkeypatch.setattr(queue_module, "verify_markdown", lambda *_: None)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.fidelity_issues
+    assert any(
+        issue.severity == "error" and "paragraph" in issue.message
+        for issue in completed.fidelity_issues
+    )
+    assert "content issue(s)" in completed.phase
+    assert completed.fidelity_issues[0].content_preview == "Lead paragraph."
     database.close()
 
 
@@ -219,6 +278,7 @@ async def test_multiple_photos_refresh_gallery_links_once(
     assert completed is not None
     assert completed.status == JobStatus.COMPLETED
     assert resolve_calls == 1
+    assert completed.fidelity_issues == []
     database.close()
 
 
