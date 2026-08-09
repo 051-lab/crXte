@@ -327,12 +327,12 @@ def _render_atomic(block: dict, entities: dict[str, dict], media: dict[str, dict
                 f"{escape(formula)}</annotation></semantics></math>"
             )
         elif entity_type == "MARKDOWN":
-    markdown = _string(data.get("markdown")).strip()
-    lines = markdown.splitlines()
-    if len(lines) >= 2 and lines[0].startswith("```") and lines[-1] == "```":
-        code = "\n".join(lines[1:-1])
-        rendered.append(f"<pre><code>{escape(code)}</code></pre>")
-elif entity_type == "MEDIA":
+            markdown = _string(data.get("markdown")).strip()
+            lines = markdown.splitlines()
+            if len(lines) >= 2 and lines[0].startswith("```") and lines[-1] == "```":
+                code = "\n".join(lines[1:-1])
+                rendered.append(f"<pre><code>{escape(code)}</code></pre>")
+        elif entity_type == "MEDIA":
             raw_items = data.get("mediaItems")
             if not isinstance(raw_items, list):
                 continue
