@@ -116,6 +116,29 @@ def test_markdown_sanitizes_html_links_and_maps_known_body_images(tmp_path: Path
     assert pdf_text.index("Safe structure") < pdf_text.index("Body diagram")
 
 
+def test_literal_angle_brackets_in_body_text_are_exported_as_text(tmp_path: Path) -> None:
+    article = ArticleMetadata(
+        id="article-escape",
+        title="Escapes",
+        html=(
+            "<p>Literal &lt;script&gt;alert(1)&lt;/script&gt; and <b>x</b>.</p>"
+            "<ul><li>Arrow &lt;-&gt; plus</li></ul>"
+        ),
+    )
+    source_url = "https://x.com/example/status/123"
+
+    markdown = render_markdown_text(_post(), [], article=article, source_url=source_url)
+    assert "<script>alert(1)</script>" not in markdown
+    assert r"Literal \<script\>alert(1)\</script\>" in markdown
+    assert r"Arrow \<-\&gt\; plus" in markdown or r"-\>" in markdown
+
+    pdf_path = tmp_path / "escaped.pdf"
+    write_pdf(pdf_path, _post(), [], article=article, source_url=source_url)
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
+    assert "Literal <script>alert(1)</script>" in pdf_text
+    assert "Arrow" in pdf_text
+
+
 def test_markdown_normalizes_nested_inline_whitespace_without_splitting_words() -> None:
     article = ArticleMetadata(
         id="article-1",
