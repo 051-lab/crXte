@@ -3,6 +3,7 @@ from __future__ import annotations
 from x_media_downloader.article_html import to_html
 
 
+# X Articles encode fenced code cards as atomic MARKDOWN entities.
 def test_atomic_markdown_fence_renders_code_block() -> None:
     article = {
         "content_state": {
