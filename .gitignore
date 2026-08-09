@@ -18,6 +18,10 @@ htmlcov/
 # Builds
 build/
 dist/
+*.zip
+
+# Stray captures
+-.png
 
 # Runtime downloads and logs
 *.part
