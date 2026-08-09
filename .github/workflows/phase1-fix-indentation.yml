@@ -1,22 +1,23 @@
-name: Phase 1 fix indentation
+name: Phase 1 indentation correction
 
 on:
   push:
-    branches: [fix/article-markdown-entities]
+    branches:
+      - fix/article-markdown-entities
 
 permissions:
   contents: write
 
 jobs:
-  fix:
-    if: github.actor != 'github-actions[bot]'
+  correct:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
           ref: fix/article-markdown-entities
-      - name: Correct indentation and remove this workflow
+      - name: Correct source and self-remove
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -40,7 +41,7 @@ elif entity_type == "MEDIA":
         elif entity_type == "MEDIA":
 '''
           if source.count(broken) != 1:
-              raise SystemExit(f"expected one broken Markdown branch, found {source.count(broken)}")
+              raise SystemExit(f"expected one broken branch; found {source.count(broken)}")
           path.write_text(source.replace(broken, fixed, 1), encoding="utf-8")
           PY
           rm .github/workflows/phase1-fix-indentation.yml
