@@ -508,7 +508,7 @@ class DownloadQueue:
                 self._complete_step(job, completed_bytes)
 
             fidelity_report = await self._audit_fidelity(
-                analysis, media_paths, markdown_bytes, pdf_bytes
+                analysis, document_media, markdown_bytes, pdf_bytes
             )
             job.fidelity_issues = as_job_issues(fidelity_report)
 
