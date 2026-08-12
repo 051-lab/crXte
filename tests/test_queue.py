@@ -25,12 +25,51 @@ from x_media_downloader.models import (
 from x_media_downloader.queue import (
     DownloadQueue,
     QueueError,
+    _phase_with_fidelity,
     estimated_total,
     filename_base,
     output_lock,
     safe_component,
     ytdlp_progress_arguments,
 )
+
+
+def test_phase_with_fidelity_never_labels_content_loss_as_complete() -> None:
+    from x_media_downloader.fidelity import FidelityIssue, FidelityReport
+
+    clean = _phase_with_fidelity(2, FidelityReport())
+    assert clean == "Complete · 2 output(s)"
+
+    warnings = _phase_with_fidelity(
+        1,
+        FidelityReport(
+            (
+                FidelityIssue(
+                    severity="warning",
+                    stage="article_html",
+                    source_type="block",
+                    message="text was preserved.",
+                ),
+            )
+        ),
+    )
+    assert warnings == "Complete · 1 output(s) · 1 warning(s)"
+
+    errors = _phase_with_fidelity(
+        1,
+        FidelityReport(
+            (
+                FidelityIssue(
+                    severity="error",
+                    stage="source→html",
+                    source_type="block",
+                    message="A paragraph from the article source is missing.",
+                ),
+            )
+        ),
+    )
+    assert errors == "Finished with content issues · 1 output(s) · 1 content issue(s)"
+    assert "Complete" not in errors
 
 
 def video_analysis() -> Analysis:

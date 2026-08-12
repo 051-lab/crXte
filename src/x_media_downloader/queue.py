@@ -70,11 +70,11 @@ def ytdlp_progress_arguments() -> list[str]:
 
 
 def _phase_with_fidelity(completed_count: int, report: FidelityReport) -> str:
-    phase = f"Complete · {completed_count} output(s)"
     summary = report.summary()
-    if summary != "no fidelity issues":
-        phase += f" · {summary}"
-    return phase
+    if summary == "no fidelity issues":
+        return f"Complete · {completed_count} output(s)"
+    prefix = "Complete" if not report.errors() else "Finished with content issues"
+    return f"{prefix} · {completed_count} output(s) · {summary}"
 
 
 @contextmanager

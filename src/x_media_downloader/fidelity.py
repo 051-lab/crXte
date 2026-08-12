@@ -32,7 +32,21 @@ from pathlib import Path
 from bs4 import BeautifulSoup, Tag
 from pypdf import PdfReader
 
-from .documents import Block, DocumentMedia, Text, document_blocks
+from .documents import (
+    Block,
+    DocumentMedia,
+    Text,
+    _analysis_media,
+    _markdown_media_target,
+    document_blocks,
+)
+from .extract_extractors import (
+    entity_kind,
+    entity_preview,
+    extract_known_block_kinds,
+    extract_media_items,
+    header_level,
+)
 from .models import Analysis
 from .models import FidelityIssue as JobIssue
 
@@ -158,13 +172,16 @@ def _issue(
 
 @dataclass(frozen=True, slots=True)
 class ItemRecord:
-    """One meaningful source construct discovered in the article HTML."""
+    """One meaningful source construct discovered in the article."""
 
     kind: str
     text: str = ""
     level: int = 0
     code: str = ""
     media_id: str | None = None
+    entity_type: str | None = None
+    raw_type: str | None = None
+    source_index: int | None = None
 
     @property
     def plain(self) -> str:
@@ -178,9 +195,19 @@ def _record(
     level: int = 0,
     code: str = "",
     media_id: str | None = None,
+    entity_type: str | None = None,
+    raw_type: str | None = None,
+    source_index: int | None = None,
 ) -> ItemRecord:
     return ItemRecord(
-        kind=kind, text=text, level=level, code=code, media_id=media_id
+        kind=kind,
+        text=text,
+        level=level,
+        code=code,
+        media_id=media_id,
+        entity_type=entity_type,
+        raw_type=raw_type,
+        source_index=source_index,
     )
 
 
@@ -303,6 +330,456 @@ def scan_html(html: str) -> tuple[tuple[ItemRecord, ...], FidelityReport]:
             if text:
                 records.append(_record("paragraph", text=text))
     return tuple(records), FidelityReport(tuple(issues))
+
+
+def _entity_lookup(content: dict) -> dict[str, dict]:
+    raw = content.get("entityMap")
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+    if isinstance(raw, list):
+        return {
+            str(item.get("key")): item["value"]
+            for item in raw
+            if isinstance(item, dict) and isinstance(item.get("value"), dict)
+        }
+    return {}
+
+
+def _markdown_fence_content(value: str) -> str:
+    lines = value.splitlines()
+    if len(lines) >= 2 and lines[0].startswith("```") and lines[-1] == "```":
+        return "\n".join(lines[1:-1])
+    return value
+
+
+def scan_content_state(content_state: object) -> tuple[tuple[ItemRecord, ...], FidelityReport]:
+    """Inventory meaningful constructs from the raw X article content state.
+
+    Produces structural ``source`` issues for malformed payloads and for
+    relationships the renderer depends on (entity lookups, media items), so a
+    silent failure upstream cannot go unnoticed.
+    """
+    if not isinstance(content_state, dict):
+        return (), FidelityReport(
+            (
+                _issue(
+                    "error",
+                    "source",
+                    "document",
+                    "The article content state could not be interpreted.",
+                    preview=_preview(str(content_state)) if content_state else None,
+                ),
+            )
+        )
+    blocks = content_state.get("blocks")
+    if not isinstance(blocks, list):
+        return (), FidelityReport(
+            (
+                _issue(
+                    "error",
+                    "source",
+                    "document",
+                    "The article content state has no readable blocks.",
+                ),
+            )
+        )
+    entity_map = _entity_lookup(content_state)
+    native_types = extract_known_block_kinds()
+    records: list[ItemRecord] = []
+    issues: list[FidelityIssue] = []
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type") or "")
+        text = str(block.get("text") or "")
+        if block_type == "atomic":
+            raw_ranges = block.get("entityRanges")
+            if not isinstance(raw_ranges, list):
+                issues.append(
+                    _issue(
+                        "error",
+                        "source",
+                        "entity",
+                        "An atomic block has no entity ranges.",
+                        block_index=index,
+                    )
+                )
+                continue
+            for item in raw_ranges:
+                if not isinstance(item, dict):
+                    continue
+                raw_key = item.get("key")
+                key = str(raw_key) if raw_key is not None else ""
+                entity = entity_map.get(key)
+                if not entity:
+                    issues.append(
+                        _issue(
+                            "error",
+                            "source",
+                            "entity",
+                            f"Entity key {key!r} referenced by an "
+                            "atomic block is missing from the entity map.",
+                            block_index=index,
+                        )
+                    )
+                    continue
+                entity_type = str(entity.get("type") or "").upper()
+                data = entity.get("data") if isinstance(entity.get("data"), dict) else {}
+                kind = entity_kind(entity_type)
+                if kind == "divider":
+                    records.append(
+                        _record(
+                            "divider",
+                            raw_type="atomic:divider",
+                            entity_type=entity_type,
+                            source_index=index,
+                        )
+                    )
+                elif kind == "code":
+                    markdown = str(data.get("markdown") or "")
+                    if markdown:
+                        records.append(
+                            _record(
+                                "code",
+                                code=_markdown_fence_content(markdown),
+                                raw_type="atomic:markdown",
+                                entity_type=entity_type,
+                                source_index=index,
+                            )
+                        )
+                elif kind == "media":
+                    raw_items = data.get("mediaItems")
+                    if not isinstance(raw_items, list):
+                        issues.append(
+                            _issue(
+                                "error",
+                                "source",
+                                "media",
+                                "A MEDIA entity has malformed mediaItems.",
+                                block_index=index,
+                                entity_type=entity_type,
+                            )
+                        )
+                        continue
+                    for media_item in extract_media_items(data):
+                        media_id = media_item.get("mediaId")
+                        if media_id is None:
+                            issues.append(
+                                _issue(
+                                    "error",
+                                    "source",
+                                    "media",
+                                    "A MEDIA item has no mediaId.",
+                                    block_index=index,
+                                    entity_type=entity_type,
+                                )
+                            )
+                            continue
+                        records.append(
+                            _record(
+                                "media",
+                                media_id=str(media_id),
+                                raw_type="atomic:media",
+                                entity_type=entity_type,
+                                source_index=index,
+                            )
+                        )
+                elif kind == "paragraph":
+                    records.append(
+                        _record(
+                            "paragraph",
+                            text=str(data.get("formula") or text),
+                            raw_type="atomic:latex",
+                            entity_type=entity_type,
+                            source_index=index,
+                        )
+                    )
+                else:
+                    preview = entity_preview(data, text)
+                    if preview:
+                        if "\n" in preview:
+                            records.append(
+                                _record(
+                                    "code",
+                                    code=preview,
+                                    raw_type=f"atomic:{entity_type or 'unknown'}",
+                                    entity_type=entity_type,
+                                    source_index=index,
+                                )
+                            )
+                        else:
+                            records.append(
+                                _record(
+                                    "paragraph",
+                                    text=preview,
+                                    raw_type=f"atomic:{entity_type or 'unknown'}",
+                                    entity_type=entity_type,
+                                    source_index=index,
+                                )
+                            )
+            continue
+        kind = native_types.get(block_type)
+        if kind is None:
+            if text:
+                records.append(
+                    _record(
+                        "paragraph",
+                        text=text,
+                        raw_type=block_type,
+                        source_index=index,
+                    )
+                )
+            continue
+        if kind == "heading":
+            try:
+                level = header_level(block_type)
+            except ValueError:
+                level = 1
+            records.append(
+                _record(
+                    "heading",
+                    text=text,
+                    level=level,
+                    raw_type=block_type,
+                    source_index=index,
+                )
+            )
+        elif kind == "code":
+            records.append(
+                _record("code", code=text, raw_type=block_type, source_index=index)
+            )
+        elif kind == "divider":
+            records.append(_record("divider", raw_type=block_type, source_index=index))
+        elif text:
+            records.append(
+                _record(kind, text=text, raw_type=block_type, source_index=index)
+            )
+    return tuple(records), FidelityReport(tuple(issues))
+
+
+def _media_id_map(media_entities: object) -> set[str]:
+    if isinstance(media_entities, dict):
+        raw = list(media_entities.values())
+    elif isinstance(media_entities, list):
+        raw = media_entities
+    else:
+        raw = []
+    return {
+        str(item["media_id"])
+        for item in raw
+        if isinstance(item, dict) and item.get("media_id") is not None
+    }
+
+
+def _native_raw_type(raw_type: str | None) -> bool:
+    if not raw_type:
+        return True
+    if raw_type in extract_known_block_kinds():
+        return True
+    return raw_type.startswith("atomic:")
+
+
+def _rectify_missing_entities(
+    raw_report: FidelityReport, audit: FidelityReport
+) -> FidelityReport:
+    flagged = any(
+        issue.source_type == "entity" and "absent" in issue.message
+        for issue in audit.issues
+    )
+    if not flagged:
+        return raw_report
+    return FidelityReport(
+        tuple(
+            issue
+            for issue in raw_report.issues
+            if not (issue.source_type == "entity" and "missing" in issue.message)
+        )
+    )
+
+
+def compare_source_html(
+    raw_records: Sequence[ItemRecord],
+    html_records: Sequence[ItemRecord],
+    *,
+    media_entities: object,
+    included_source_ids: set[str],
+    audit: FidelityReport,
+) -> FidelityReport:
+    """Verify the rendered HTML represents everything meaningful in the source.
+
+    The rendered side is produced by the article renderer; this stage holds it
+    accountable to its own input.  All text comparisons are order-sensitive, so
+    silent reorderings and single-item substitutions are caught instead of
+    sliding past count checks.
+    """
+    issues: list[FidelityIssue] = []
+    known_ids = _media_id_map(media_entities) | included_source_ids
+    counts = {
+        kind: (_count(raw_records, kind), _count(html_records, kind))
+        for kind in ("heading", "paragraph", "quote", "list", "code", "divider")
+    }
+
+    def values_of(kind: str) -> tuple[list[str], list[str]]:
+        raw_values = [
+            record.plain if kind != "code" else _fold(record.code)
+            for record in raw_records
+            if record.kind == kind
+        ]
+        html_values = [
+            record.plain if kind != "code" else _fold(record.code)
+            for record in html_records
+            if record.kind == kind
+        ]
+        return raw_values, html_values
+
+    for kind in ("heading", "paragraph", "quote", "list", "code", "divider"):
+        source, rendered = counts[kind]
+        if source != rendered:
+            raw_values, html_values = values_of(kind)
+            missing = next(
+                (value for value in raw_values if value not in html_values),
+                None,
+            )
+            message = (
+                f"{source} {kind}(s) in the article source but "
+                f"{rendered} in the rendered article."
+            )
+            if kind == "paragraph" and source > rendered:
+                raw_type = next(
+                    (
+                        record.raw_type
+                        for record in raw_records
+                        if record.kind == "paragraph"
+                        and not _native_raw_type(record.raw_type)
+                    ),
+                    None,
+                )
+                if raw_type:
+                    message += f" (raw type {raw_type})"
+            issues.append(
+                _issue(
+                    "error",
+                    "source→html",
+                    "block",
+                    message,
+                    block_index=next(
+                        (record.source_index for record in raw_records if record.kind == kind),
+                        None,
+                    ),
+                    preview=_preview(missing) if missing is not None else None,
+                )
+            )
+
+    def ordered(kind: str, label: str, *, emit_missing: bool) -> None:
+        raw_values, html_values = values_of(kind)
+
+        def mismatch(value: str) -> None:
+            if value in html_values:
+                issues.append(
+                    _issue(
+                        "error",
+                        "source→html",
+                        "block",
+                        f"A {label} appears in a different position than in the article source.",
+                        preview=_preview(value),
+                    )
+                )
+            elif emit_missing:
+                issues.append(
+                    _issue(
+                        "error",
+                        "source→html",
+                        "block",
+                        f"A {label} from the article source is missing from the rendered article.",
+                        preview=_preview(value),
+                    )
+                )
+
+        i = j = 0
+        while i < len(raw_values) and j < len(html_values):
+            if raw_values[i] == html_values[j]:
+                i += 1
+                j += 1
+                continue
+            advance = next(
+                (position for position in range(j + 1, len(html_values))
+                 if html_values[position] == raw_values[i]),
+                None,
+            )
+            if advance is not None:
+                issues.append(
+                    _issue(
+                        "error",
+                        "source→html",
+                        "block",
+                        f"A {label} appears in a different position than in the article source.",
+                        preview=_preview(raw_values[i]),
+                    )
+                )
+                i += 1
+                j = advance + 1
+            else:
+                mismatch(raw_values[i])
+                i += 1
+        while i < len(raw_values):
+            mismatch(raw_values[i])
+            i += 1
+
+    ordered("paragraph", "paragraph", emit_missing=counts["paragraph"][0] == counts["paragraph"][1])
+    ordered("heading", "heading", emit_missing=counts["heading"][0] == counts["heading"][1])
+    ordered("code", "code block", emit_missing=counts["code"][0] == counts["code"][1])
+
+    for kind, label in (("list", "list item"), ("quote", "quote")):
+        if counts[kind][0] != counts[kind][1]:
+            continue
+        raw_set = {
+            record.plain for record in raw_records if record.kind == kind and record.plain
+        }
+        html_set = {
+            record.plain for record in html_records if record.kind == kind and record.plain
+        }
+        for text in sorted(raw_set - html_set):
+            issues.append(
+                _issue(
+                    "error",
+                    "source→html",
+                    "block",
+                    f"A {label} from the article source is missing from the rendered article.",
+                    preview=text,
+                )
+            )
+
+    media_records = [record for record in raw_records if record.kind == "media"]
+    if media_records and not any(
+        record.media_id in known_ids for record in media_records
+    ) and not any(
+        issue.stage == "article_html" and issue.source_type == "media"
+        for issue in audit.issues
+    ):
+        issues.append(
+            _issue(
+                "error",
+                "source→html",
+                "media",
+                "Media items in the article could not be resolved to downloadable sources.",
+                block_index=media_records[0].source_index,
+            )
+        )
+    known_media = [record for record in media_records if record.media_id in known_ids]
+    if known_media:
+        rendered_media = _count(html_records, "image") + _count(html_records, "video")
+        if rendered_media < len(known_media):
+            issues.append(
+                _issue(
+                    "error",
+                    "source→html",
+                    "media",
+                    f"{len(known_media)} article media item(s) in the source but "
+                    f"{rendered_media} rendered in the article.",
+                    block_index=known_media[0].source_index,
+                )
+            )
+    return FidelityReport(tuple(issues))
 
 
 def records_from_blocks(blocks: Sequence[Block]) -> tuple[ItemRecord, ...]:
@@ -431,6 +908,8 @@ def check_markdown(
     html_records: Sequence[ItemRecord],
     included_media_ids: set[str],
     markdown: str,
+    *,
+    required_targets: Sequence[str] = (),
 ) -> FidelityReport:
     """Verify every source record is represented in the Markdown output."""
     lines = markdown.splitlines()
@@ -544,6 +1023,25 @@ def check_markdown(
                     "media",
                     f"{len(media_targets)} media reference(s) in Markdown for "
                     f"{expected_media} selected article media item(s).",
+                )
+            )
+
+    if required_targets:
+        non_url_targets = [
+            target
+            for target in _MEDIA_TARGET.findall(markdown)
+            if not target.startswith(("http://", "https://"))
+        ]
+        missing_refs = [target for target in required_targets if target not in non_url_targets]
+        if missing_refs:
+            issues.append(
+                _issue(
+                    "error",
+                    "markdown",
+                    "media",
+                    f"{len(missing_refs)} selected article media reference(s) could not "
+                    "be found in the Markdown output.",
+                    preview=missing_refs[0],
                 )
             )
 
@@ -727,19 +1225,40 @@ def evaluate_export(
 ) -> FidelityReport:
     """Produce the full fidelity report for an article document export."""
     article = analysis.article
-    if not article or not article.html:
+    if not article:
         return FidelityReport()
+    tracked = article.content_state is not None
+    raw_records: tuple[ItemRecord, ...] = ()
+    raw_report = FidelityReport()
+    if tracked:
+        raw_records, raw_report = scan_content_state(article.content_state)
     html_records, audit = scan_html(article.html)
     reports: list[FidelityReport] = [audit]
+    if tracked:
+        raw_report = _rectify_missing_entities(raw_report, audit)
+        if raw_report.issues:
+            reports.append(raw_report)
 
     media: list[DocumentMedia] = []
     included_source_ids: set[str] = set()
     if media_paths:
-        for attachment in analysis.attachments:
-            path = media_paths.get(attachment.id)
-            if path is not None and attachment.source_id:
-                included_source_ids.add(attachment.source_id)
-                media.append(DocumentMedia(attachment, path))
+        media = list(_analysis_media(analysis, media_paths))
+        included_source_ids = {
+            item.attachment.source_id
+            for item in media
+            if item.attachment.source_id is not None
+        }
+
+    if tracked:
+        reports.append(
+            compare_source_html(
+                raw_records,
+                html_records,
+                media_entities=article.media_entities,
+                included_source_ids=included_source_ids,
+                audit=audit,
+            )
+        )
 
     _title, blocks, _remaining = document_blocks(
         analysis.post, media, article=article
@@ -764,7 +1283,24 @@ def evaluate_export(
                 )
             )
             markdown_text = ""
-        reports.append(check_markdown(html_records, included_source_ids, markdown_text))
+        raw_item_ids = {
+            record.media_id
+            for record in raw_records
+            if record.kind == "media" and record.media_id
+        }
+        required_targets = tuple(
+            _markdown_media_target(item)
+            for item in media
+            if item.attachment.source_id in raw_item_ids
+        )
+        reports.append(
+            check_markdown(
+                html_records,
+                included_source_ids,
+                markdown_text,
+                required_targets=required_targets,
+            )
+        )
     if pdf is not None:
         reports.append(check_pdf(html_records, included_source_ids, pdf))
     return _merge(*reports)

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
+import tempfile
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -62,12 +65,15 @@ def normalize_x_url(value: str) -> tuple[str, str]:
     return normalized, post_id
 
 
-async def _run_json(command: list[str], label: str, timeout: float = 90) -> object:
+async def _run_json(
+    command: list[str], label: str, timeout: float = 90, *, env: dict[str, str] | None = None
+) -> object:
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, **(env or {})},
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except TimeoutError as error:
@@ -138,8 +144,11 @@ def ytdlp_command(url: str) -> list[str]:
     ]
 
 
-async def resolve_gallery_media(url: str) -> tuple[dict, list[ResolvedMedia]]:
-    payload = await _run_json(gallery_command(url), "The X media extractor")
+async def resolve_gallery_media(
+    url: str, *, capture_path: str | None = None
+) -> tuple[dict, list[ResolvedMedia]]:
+    env = {"CR_XTE_RAW_CAPTURE": capture_path} if capture_path else None
+    payload = await _run_json(gallery_command(url), "The X media extractor", env=env)
     if not isinstance(payload, list):
         raise AnalysisError("X returned an unexpected media response.")
     post: dict = {}
@@ -239,10 +248,14 @@ def _article_id(value: object, post_id: str) -> str:
     return post_id
 
 
-def _article_metadata(post: dict, post_id: str) -> ArticleMetadata | None:
+def _article_metadata(
+    post: dict, post_id: str, capture: dict | None = None
+) -> ArticleMetadata | None:
     article = post.get("article")
     if not isinstance(article, dict):
         return None
+    content_state = capture.get("content_state") if isinstance(capture, dict) else None
+    media_entities = capture.get("media_entities") if isinstance(capture, dict) else None
     return ArticleMetadata(
         id=_article_id(article.get("id"), post_id),
         title=_optional_text(article.get("title")) or "",
@@ -250,7 +263,21 @@ def _article_metadata(post: dict, post_id: str) -> ArticleMetadata | None:
         updated_at=_optional_text(article.get("date_updated")),
         html=_optional_text(article.get("html")) or "",
         html_renderer_version=1,
+        content_state=content_state if isinstance(content_state, dict) else None,
+        media_entities=(
+            media_entities if isinstance(media_entities, (dict, list)) else None
+        ),
     )
+
+
+def _read_raw_capture(capture_path: Path) -> dict | None:
+    try:
+        payload = json.loads(capture_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
 
 
 def _video_formats(entry: dict) -> list[dict]:
@@ -329,11 +356,16 @@ async def quality_options(entry: dict) -> list[QualityOption]:
 
 async def analyze_url(value: str) -> Analysis:
     url, post_id = normalize_x_url(value)
-    gallery_result, yt_result = await asyncio.gather(
-        resolve_gallery_media(url),
-        resolve_ytdlp_entries(url),
-        return_exceptions=True,
-    )
+    capture_path = Path(tempfile.gettempdir()) / f"crxte-raw-{uuid.uuid4().hex}.json"
+    try:
+        gallery_result, yt_result = await asyncio.gather(
+            resolve_gallery_media(url, capture_path=str(capture_path)),
+            resolve_ytdlp_entries(url),
+            return_exceptions=True,
+        )
+        capture = _read_raw_capture(capture_path)
+    finally:
+        capture_path.unlink(missing_ok=True)
     gallery_error = gallery_result if isinstance(gallery_result, AnalysisError) else None
     if isinstance(gallery_result, BaseException):
         gallery_post, media = {}, []
@@ -345,7 +377,7 @@ async def analyze_url(value: str) -> Analysis:
         first_entry = yt_entries[0]
         handle = str(first_entry.get("uploader_id") or first_entry.get("channel_id") or "unknown")
         name = str(first_entry.get("uploader") or first_entry.get("channel") or handle)
-    article = _article_metadata(gallery_post, post_id)
+    article = _article_metadata(gallery_post, post_id, capture)
     post = PostMetadata(
         post_id=post_id,
         author_name=name,

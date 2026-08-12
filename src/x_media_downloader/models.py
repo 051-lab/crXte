@@ -70,6 +70,8 @@ class ArticleMetadata(BaseModel):
     updated_at: str | None = None
     html: str = ""
     html_renderer_version: int = 0
+    content_state: dict | None = None
+    media_entities: dict | list | None = None
 
 
 class PostMetadata(BaseModel):

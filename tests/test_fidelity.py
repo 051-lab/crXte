@@ -216,6 +216,51 @@ def test_check_markdown_paragraph_heading_quote_and_list_presence() -> None:
     assert not report.is_complete()
 
 
+def _media_html() -> str:
+    return '<figure><img data-media-id="src-1"></figure>'
+
+
+def test_check_markdown_relative_links_are_not_counted_as_media() -> None:
+    records, _audit = scan_html(_media_html())
+    markdown = (
+        "# Title\n\nBy A (@b)\n\n"
+        "[Documentation](<docs/readme.md>)\n\n"
+        "[Another post](../post.md)\n\n"
+        "[Local page](<notes.html>)\n"
+    )
+    assert check_markdown(records, {"src-1"}, markdown).is_complete()
+
+
+def test_check_markdown_relative_links_do_not_mask_a_missing_media_ref() -> None:
+    records, _audit = scan_html(_media_html())
+    markdown = (
+        "# Title\n\nBy A (@b)\n\n"
+        "[Documentation](<docs/readme.md>)\n\n"
+        "[Another post](../post.md)\n\n"
+        "[Local page](<notes.html>)\n"
+    )
+    legacy = check_markdown(records, {"src-1"}, markdown)
+    assert legacy.is_complete()
+    strict = check_markdown(
+        records, {"src-1"}, markdown, required_targets=("media/pic.jpg",)
+    )
+    assert not strict.is_complete()
+    assert any(issue.source_type == "media" for issue in strict.errors())
+
+
+def test_check_markdown_known_media_ref_matched_exactly() -> None:
+    records, _audit = scan_html(_media_html())
+    markdown = (
+        "# Title\n\nBy A (@b)\n\n"
+        "[Documentation](<docs/readme.md>)\n\n"
+        "![Pic](<media/pic.jpg>)\n"
+    )
+    report = check_markdown(
+        records, {"src-1"}, markdown, required_targets=("media/pic.jpg",)
+    )
+    assert report.is_complete(), [issue.message for issue in report.issues]
+
+
 def test_rich_article_passes_full_export_fidelity_round_trip(tmp_path: Path) -> None:
     article = _rich_article()
     html = "".join(to_html(article))
