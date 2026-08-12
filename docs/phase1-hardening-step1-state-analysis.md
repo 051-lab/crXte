@@ -3,7 +3,7 @@
 **Date:** 2026-08-10
 **Repo:** `/home/soloarch/ai-t00lz/crXte`
 **Branch:** `feature/export-fidelity-validation`
-**Input:** `docs/superpowers/plans/1. FIRST — VERIFY CURRENT LOCAL STATE.md` (708 lines, 17 sections, independent-review hardening plan)
+**Input:** the independent-review hardening plan (708 lines, 17 sections) that originated the Phase 1 hardening pass; its findings and execution record live in this document and in `docs/export-fidelity.md`.
 
 ---
 

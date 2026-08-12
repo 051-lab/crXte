@@ -66,25 +66,45 @@ Exact behavior:
   text. When the renderer kept the text behind a `data-fidelity` marker, the
   marker's warning applies and no error is raised.
 * A MEDIA item is only "resolved" when its `mediaId` is present in the
-  article `media_entities` map (or the export's included sources). Unresolved
-  items produce an error unless the renderer already flagged
-  `unresolved-media`.
+  article `media_entities` map (or the export's included sources). Resolution
+  is audited **per item**: each raw media record must be resolved, or covered
+  by the renderer's `unresolved-media` marker, or it produces an error naming
+  the specific `mediaId`. A mixed entity where one item resolves and another
+  does not is therefore reported, not masked by the successful item.
+* Rendered media identity is verified by `data-media-id`: every known source
+  media item must appear with the correct `mediaId` in the rendered figures.
+  Substituting one item's identity for another (source `A,B` rendered as
+  `A,A`) is an error naming the short item.
 * `missing-entity` is reported once: the renderer's marker takes precedence
   when present, otherwise the raw-stage issue stands.
 * MEDIA items do not participate in text counts; their survival is verified
-  through rendered-figure counts, the Markdown media references, and the PDF
-  media audit.
+  through per-item resolution, rendered identity, the Markdown media
+  references, and the PDF media audit.
 
 ## Multiplicity and ordering
 
 Count checks were insufficient: `source A,A,B → output A,B,B` passes counts
-and set checks. The source→HTML comparison is therefore order-sensitive:
+and set checks. Every comparison stage is therefore multiset- and
+order-sensitive:
 
-* paragraphs, headings, and code blocks are compared as ordered sequences;
-  a shifted item produces a *position* error, an absent item a *missing*
-  error (whose preview names the first genuinely missing text);
-* list items and quotes are compared as multisets when counts match;
-* duplicate legitimate paragraphs (e.g. `A,B,A → A,B,A`) pass cleanly;
+* paragraphs, headings, and code blocks are compared as ordered sequences
+  across the whole article (`source→html` and the document stage); a shifted
+  item produces a *position* error, an absent item a *missing* error (whose
+  preview names the first genuinely missing text);
+* list items and quotes are compared as multisets when counts match, so a
+  duplicated item substituted for a missing sibling is caught;
+* paragraphs, quotes, list items, and headings are compared as multisets in
+  the Markdown stage; duplicated source content must appear with the same
+  multiplicity in the output;
+* heading levels are part of the identity: a `header-two` demoted to `<h1>`
+  in the render, or to a single `#` in Markdown, is an error. Markdown
+  headings are expected one level below the source level (the document title
+  is the master `#`);
+* a cross-kind reordering (a heading swapping with a following paragraph) is
+  detected against the article's structural sequence, excluding media and
+  metadata records that have no stable cross-kind identity;
+* duplicate legitimate content (`A,B,A → A,B,A`) passes cleanly at every
+  stage;
 * reordered Markdown code entities are detected at the raw boundary as well
   as in the Markdown stage.
 * When a kind's counts already differ, a single count error (with a missing
@@ -125,8 +145,6 @@ inventoried, only *included* items are required in document outputs.
 * Raw-source checks apply to analyzes produced by the current gallery-dl
   version whose renderer captured a `content_state`; older persisted analyses
   keep the previous behavior (no raw boundary).
-* Cross-kind reorderings (e.g. a heading swapping with a following paragraph)
-  are not detected; only same-kind ordering is audited.
 * Media figure expectations assume the renderer is deterministic (it is), and
   per-kind availability is resolved through `media_entities`; attachments
   whose source metadata diverges from `media_entities` are treated as
@@ -134,12 +152,15 @@ inventoried, only *included* items are required in document outputs.
 * The Markdown body-heading check assumes a single H1 document title; a
   future multi-title layout would need that assumption revisited.
 * PDF text-layer checks are best-effort for paragraphs/headings (warnings);
-  code blocks and media counts are exact errors.
+  code blocks are checked for exact content multiplicity and media counts
+  are exact errors.
 
 ## Verification
 
 Regression suite: `tests/test_fidelity_raw_source.py` (raw-source boundary,
-18 focused tests including the 13-fence article shape), `tests/test_fidelity.py`
-(markdown/pdf/media-target), `tests/test_queue.py` (phase semantics, media
-exclusion). Live reference article used in manual validation:
+including the 13-fence article shape and per-item media identity),
+`tests/test_fidelity.py` (document stage, markdown/pdf, media targets),
+`tests/test_extractors.py` (heading level mapping), `tests/test_queue.py`
+(phase semantics, media exclusion). The full suite is 159 tests. Live
+reference article used in manual validation:
 `https://x.com/RohOnChain/status/2080296261576687751` (13 code sections).
