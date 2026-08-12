@@ -24,6 +24,7 @@ An export is only considered fully successful when its report contains no
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from io import BytesIO
@@ -316,9 +317,12 @@ def scan_html(html: str) -> tuple[tuple[ItemRecord, ...], FidelityReport]:
         elif name == "hr":
             records.append(_record("divider"))
         elif name == "figure":
-            media = child.find(["img", "video"])
-            caption = _element_text(child.find("figcaption")) if child.find("figcaption") else ""
-            if media is not None and isinstance(media, Tag):
+            caption = (
+                _element_text(child.find("figcaption"))
+                if child.find("figcaption")
+                else ""
+            )
+            for media in child.find_all(["img", "video"]):
                 kind = "image" if media.name == "img" else "video"
                 records.append(
                     _record(kind, text=caption, media_id=_media_id_of(media))
@@ -672,6 +676,9 @@ def compare_source_html(
 
     def ordered(kind: str, label: str, *, emit_missing: bool) -> None:
         raw_values, html_values = values_of(kind)
+        raw_levels = [record.level for record in raw_records if record.kind == kind]
+        html_levels = [record.level for record in html_records if record.kind == kind]
+        raw_indexes = [record.source_index for record in raw_records if record.kind == kind]
 
         def mismatch(value: str) -> None:
             if value in html_values:
@@ -698,6 +705,18 @@ def compare_source_html(
         i = j = 0
         while i < len(raw_values) and j < len(html_values):
             if raw_values[i] == html_values[j]:
+                if kind == "heading" and raw_levels[i] != html_levels[j]:
+                    issues.append(
+                        _issue(
+                            "error",
+                            "source→html",
+                            "block",
+                            "A heading changed level between the article source and the "
+                            "rendered article.",
+                            block_index=raw_indexes[i],
+                            preview=_preview(raw_values[i]),
+                        )
+                    )
                 i += 1
                 j += 1
                 continue
@@ -732,37 +751,37 @@ def compare_source_html(
     for kind, label in (("list", "list item"), ("quote", "quote")):
         if counts[kind][0] != counts[kind][1]:
             continue
-        raw_set = {
-            record.plain for record in raw_records if record.kind == kind and record.plain
-        }
-        html_set = {
-            record.plain for record in html_records if record.kind == kind and record.plain
-        }
-        for text in sorted(raw_set - html_set):
-            issues.append(
-                _issue(
-                    "error",
-                    "source→html",
-                    "block",
-                    f"A {label} from the article source is missing from the rendered article.",
-                    preview=text,
+        raw_values, html_values = values_of(kind)
+        source_multiset = Counter(value for value in raw_values if value)
+        rendered_multiset = Counter(value for value in html_values if value)
+        for text, missing in sorted((source_multiset - rendered_multiset).items()):
+            for _ in range(missing):
+                issues.append(
+                    _issue(
+                        "error",
+                        "source→html",
+                        "block",
+                        f"A {label} from the article source is missing from the rendered article.",
+                        preview=text,
+                    )
                 )
-            )
 
     media_records = [record for record in raw_records if record.kind == "media"]
-    if media_records and not any(
-        record.media_id in known_ids for record in media_records
-    ) and not any(
+    renderer_flagged_media = any(
         issue.stage == "article_html" and issue.source_type == "media"
         for issue in audit.issues
-    ):
+    )
+    for record in media_records:
+        if record.media_id in known_ids or renderer_flagged_media:
+            continue
         issues.append(
             _issue(
                 "error",
                 "source→html",
                 "media",
-                "Media items in the article could not be resolved to downloadable sources.",
-                block_index=media_records[0].source_index,
+                f"Media item {record.media_id!r} in the article could not be resolved "
+                "to a downloadable source.",
+                block_index=record.source_index,
             )
         )
     known_media = [record for record in media_records if record.media_id in known_ids]
@@ -779,6 +798,73 @@ def compare_source_html(
                     block_index=known_media[0].source_index,
                 )
             )
+        source_ids = Counter(record.media_id for record in known_media)
+        rendered_ids = Counter(
+            record.media_id
+            for record in html_records
+            if record.kind in {"image", "video"} and record.media_id
+        )
+        for media_id, expected in sorted(source_ids.items()):
+            rendered = rendered_ids.get(media_id, 0)
+            if rendered < expected:
+                issues.append(
+                    _issue(
+                        "error",
+                        "source→html",
+                        "media",
+                        f"Media item {media_id!r} appears {expected} time(s) in the article "
+                        f"source but {rendered} time(s) in the rendered article.",
+                        block_index=next(
+                            (
+                                record.source_index
+                                for record in known_media
+                                if record.media_id == media_id
+                            ),
+                            None,
+                        ),
+                    )
+                )
+
+    def section_signature(record: ItemRecord) -> tuple[object, ...] | None:
+        if record.kind in {"media", "image", "video", "caption", "table"}:
+            return None
+        if record.kind == "heading":
+            return ("heading", record.level, record.plain)
+        if record.kind == "code":
+            return ("code", _fold(record.code))
+        return (record.kind, record.plain)
+
+    source_sections = [
+        signature for record in raw_records if (signature := section_signature(record))
+    ]
+    rendered_sections = [
+        signature for record in html_records if (signature := section_signature(record))
+    ]
+    i = j = 0
+    while i < len(source_sections) and j < len(rendered_sections):
+        if source_sections[i] == rendered_sections[j]:
+            i += 1
+            j += 1
+            continue
+        advance = next(
+            (position for position in range(j + 1, len(rendered_sections))
+             if rendered_sections[position] == source_sections[i]),
+            None,
+        )
+        if advance is not None:
+            issues.append(
+                _issue(
+                    "error",
+                    "source→html",
+                    "block",
+                    "Article content appears in a different order in the rendered article "
+                    "than in the article source.",
+                )
+            )
+            i += 1
+            j = advance + 1
+        else:
+            i += 1
     return FidelityReport(tuple(issues))
 
 
@@ -832,7 +918,13 @@ def compare_blocks(
     html_records: Sequence[ItemRecord],
     block_records: Sequence[ItemRecord],
 ) -> FidelityReport:
-    """Compare the source record with the canonical document record."""
+    """Compare the source record with the canonical document record.
+
+    Text-bearing kinds are compared as multisets (duplicate substitution
+    ``A,A,B → A,B,B`` is caught), headings by ``(level, text)`` so a heading
+    that changed level is treated as missing, and code blocks by content in
+    order.
+    """
     issues: list[FidelityIssue] = []
     for kind in ("heading", "paragraph", "quote", "list", "code", "divider"):
         source = _count(html_records, kind)
@@ -856,22 +948,82 @@ def compare_blocks(
                     preview=preview,
                 )
             )
-    source_paragraphs = {
-        item.plain for item in html_records if item.kind == "paragraph" and item.plain
-    }
-    rendered_paragraphs = {
-        item.plain for item in block_records if item.kind == "paragraph" and item.plain
-    }
-    for text in sorted(source_paragraphs - rendered_paragraphs):
-        issues.append(
-            _issue(
-                "error",
-                "document",
-                "block",
-                "A source paragraph is missing from the document model.",
-                preview=text[:80],
+
+    def values(
+        records: Sequence[ItemRecord], kind: str
+    ) -> list[str] | list[tuple[int, str]]:
+        if kind == "heading":
+            return [
+                (record.level, record.plain)
+                for record in records
+                if record.kind == kind and record.plain
+            ]
+        return [
+            record.plain for record in records if record.kind == kind and record.plain
+        ]
+
+    for kind, label in (
+        ("paragraph", "paragraph"),
+        ("quote", "quote"),
+        ("list", "list item"),
+        ("heading", "heading"),
+    ):
+        source_values = values(html_records, kind)
+        block_values = values(block_records, kind)
+        for value, missing in sorted(
+            (Counter(source_values) - Counter(block_values)).items()
+        ):
+            preview = value[1] if isinstance(value, tuple) else value
+            for _ in range(missing):
+                issues.append(
+                    _issue(
+                        "error",
+                        "document",
+                        "block",
+                        f"A source {label} is missing from the document model.",
+                        preview=_preview(preview),
+                    )
+                )
+
+    source_codes = [record.code for record in html_records if record.kind == "code"]
+    block_codes = [record.code for record in block_records if record.kind == "code"]
+    if len(source_codes) == len(block_codes):
+        i = j = 0
+        while i < len(source_codes) and j < len(block_codes):
+            if _fold(source_codes[i]) == _fold(block_codes[j]):
+                i += 1
+                j += 1
+                continue
+            advance = next(
+                (
+                    position
+                    for position in range(j + 1, len(block_codes))
+                    if _fold(block_codes[position]) == _fold(source_codes[i])
+                ),
+                None,
             )
-        )
+            if advance is not None:
+                issues.append(
+                    _issue(
+                        "error",
+                        "document",
+                        "block",
+                        "A code block appears in a different position in the document model.",
+                    )
+                )
+                i += 1
+                j = advance + 1
+            else:
+                issues.append(
+                    _issue(
+                        "error",
+                        "document",
+                        "block",
+                        "A code block from the article is missing from the document model.",
+                        preview=_preview(source_codes[i]),
+                    )
+                )
+                i += 1
     return FidelityReport(tuple(issues))
 
 
@@ -1045,69 +1197,92 @@ def check_markdown(
                 )
             )
 
-    plain_lines = {_markdown_plain(line) for line in lines if _plain_candidate(line)}
-    for item in html_records:
-        if item.kind == "paragraph" and item.plain and item.plain not in plain_lines:
+    plain_candidates = [
+        _markdown_plain(line) for line in lines if _plain_candidate(line)
+    ]
+    rendered_paragraphs = Counter(plain_candidates)
+    source_paragraphs = Counter(
+        item.plain for item in html_records if item.kind == "paragraph" and item.plain
+    )
+    for text, missing in sorted((source_paragraphs - rendered_paragraphs).items()):
+        for _ in range(missing):
             issues.append(
                 _issue(
                     "error",
                     "markdown",
                     "block",
                     "A source paragraph is missing from the Markdown output.",
-                    preview=_preview(item.plain),
+                    preview=_preview(text),
                 )
             )
-        elif item.kind == "heading" and item.plain:
-            heading_texts = {
-                _markdown_plain(match.group(2))
-                for line in lines
-                if (match := _HEADING_LINE.match(line.strip()))
-            }
-            if item.plain not in heading_texts:
-                issues.append(
-                    _issue(
-                        "error",
-                        "markdown",
-                        "block",
-                        "A source heading is missing from the Markdown output.",
-                        preview=_preview(item.plain),
-                    )
+
+    rendered_headings = Counter(
+        (len(match.group(1)), _markdown_plain(match.group(2)))
+        for line in lines
+        if (match := _HEADING_LINE.match(line.strip()))
+    )
+    source_headings = Counter(
+        (min(6, item.level + 1), item.plain)
+        for item in html_records
+        if item.kind == "heading" and item.plain
+    )
+    for (_level, text), missing in sorted(
+        (source_headings - rendered_headings).items()
+    ):
+        for _ in range(missing):
+            issues.append(
+                _issue(
+                    "error",
+                    "markdown",
+                    "block",
+                    "A source heading is missing from the Markdown output or its "
+                    "level changed.",
+                    preview=_preview(text),
                 )
-        elif item.kind == "quote" and item.plain:
-            quote_texts = {
-                _markdown_plain(match.group(1))
-                for line in lines
-                if (match := _QUOTE_LINE.match(line.strip()))
-            }
-            if item.plain not in quote_texts:
-                issues.append(
-                    _issue(
-                        "error",
-                        "markdown",
-                        "block",
-                        "A source quote is missing from the Markdown output.",
-                        preview=_preview(item.plain),
-                    )
+            )
+
+    rendered_quotes = Counter(
+        _markdown_plain(match.group(1))
+        for line in lines
+        if (match := _QUOTE_LINE.match(line.strip()))
+    )
+    source_quotes = Counter(
+        item.plain for item in html_records if item.kind == "quote" and item.plain
+    )
+    for text, missing in sorted((source_quotes - rendered_quotes).items()):
+        for _ in range(missing):
+            issues.append(
+                _issue(
+                    "error",
+                    "markdown",
+                    "block",
+                    "A source quote is missing from the Markdown output.",
+                    preview=_preview(text),
                 )
-        elif item.kind == "list" and item.plain:
-            list_texts: set[str] = set()
-            for line in lines:
-                stripped = line.strip()
-                match = _ORDERED_ITEM.match(stripped) or _UNORDERED_ITEM.match(stripped)
-                if not match:
-                    continue
-                item_text = match.group(2) if match.re is _ORDERED_ITEM else match.group(1)
-                list_texts.add(_markdown_plain(item_text))
-            if item.plain not in list_texts:
-                issues.append(
-                    _issue(
-                        "error",
-                        "markdown",
-                        "block",
-                        "A source list item is missing from the Markdown output.",
-                        preview=_preview(item.plain),
-                    )
+            )
+
+    rendered_list_items = Counter()
+    for line in lines:
+        stripped = line.strip()
+        match = _ORDERED_ITEM.match(stripped) or _UNORDERED_ITEM.match(stripped)
+        if not match:
+            continue
+        item_text = match.group(2) if match.re is _ORDERED_ITEM else match.group(1)
+        rendered_list_items[_markdown_plain(item_text)] += 1
+    source_list_items = Counter(
+        item.plain for item in html_records if item.kind == "list" and item.plain
+    )
+    for text, missing in sorted((source_list_items - rendered_list_items).items()):
+        for _ in range(missing):
+            issues.append(
+                _issue(
+                    "error",
+                    "markdown",
+                    "block",
+                    "A source list item is missing from the Markdown output.",
+                    preview=_preview(text),
                 )
+            )
     return FidelityReport(tuple(issues))
 
 
@@ -1129,7 +1304,14 @@ def check_pdf(
     expected_media_ids: set[str],
     pdf_bytes: bytes,
 ) -> FidelityReport:
-    """Verify essential source content survived into the PDF output."""
+    """Verify essential source content survived into the PDF output.
+
+    Text-layer checks are inherently best-effort: paragraphs, headings,
+    quotes, and list items are confirmed with warnings because line wrapping
+    and font shaping can reorder or split them. Code blocks are checked for
+    exact content *multiplicity* (two identical code blocks must appear twice)
+    and fail as errors, matching the Markdown stage.
+    """
     try:
         folded = _fold(_pdf_text(pdf_bytes))
     except Exception:
@@ -1144,19 +1326,25 @@ def check_pdf(
             )
         )
     issues: list[FidelityIssue] = []
-    for item in html_records:
-        if item.kind == "code" and _fold(item.code):
-            if _fold(item.code) not in folded:
-                issues.append(
-                    _issue(
-                        "error",
-                        "pdf",
-                        "block",
-                        "A code block is missing from the PDF output.",
-                        preview=_preview(item.code),
-                    )
+    code_counts = Counter(
+        _fold(item.code)
+        for item in html_records
+        if item.kind == "code" and _fold(item.code)
+    )
+    for code, expected in sorted(code_counts.items()):
+        present = folded.count(code)
+        for _ in range(max(0, expected - present)):
+            issues.append(
+                _issue(
+                    "error",
+                    "pdf",
+                    "block",
+                    "A code block is missing from the PDF output.",
+                    preview=_preview(code),
                 )
-        elif item.kind in {"paragraph", "quote", "list"} and item.plain:
+            )
+    for item in html_records:
+        if item.kind in {"paragraph", "quote", "list"} and item.plain:
             if item.plain not in folded:
                 issues.append(
                     _issue(

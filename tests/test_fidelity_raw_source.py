@@ -567,6 +567,234 @@ def test_required_markdown_targets_use_the_export_reference(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# List/quote multiplicity at the raw boundary
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_list_items_substituted_in_render_are_detected() -> None:
+    content_state = {
+        "blocks": [
+            _block("unordered-list-item", "A"),
+            _block("unordered-list-item", "A"),
+            _block("unordered-list-item", "B"),
+        ],
+        "entityMap": [],
+    }
+    html = "<ul><li>A</li><li>B</li><li>B</li></ul>"
+    report = evaluate_export(_analysis(html, content_state=content_state), None, None, None)
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "source→html" and "list item" in issue.message
+        for issue in report.issues
+    )
+
+
+def test_duplicate_quotes_substituted_in_render_are_detected() -> None:
+    content_state = {
+        "blocks": [
+            _block("blockquote", "A"),
+            _block("blockquote", "A"),
+            _block("blockquote", "B"),
+        ],
+        "entityMap": [],
+    }
+    html = "<blockquote>A</blockquote><blockquote>B</blockquote><blockquote>B</blockquote>"
+    report = evaluate_export(_analysis(html, content_state=content_state), None, None, None)
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "source→html" and "quote" in issue.message
+        for issue in report.issues
+    )
+
+
+def test_legitimate_duplicate_quotes_and_list_items_stay_clean() -> None:
+    content_state = {
+        "blocks": [
+            _block("blockquote", "Q"),
+            _block("blockquote", "Q"),
+            _block("unordered-list-item", "A"),
+            _block("unordered-list-item", "A"),
+            _block("unordered-list-item", "B"),
+        ],
+        "entityMap": [],
+    }
+    html = (
+        "<blockquote>Q</blockquote><blockquote>Q</blockquote>"
+        "<ul><li>A</li><li>A</li><li>B</li></ul>"
+    )
+    report = evaluate_export(_analysis(html, content_state=content_state), None, None, None)
+    assert report.is_complete(), [issue.message for issue in report.issues]
+
+
+# ---------------------------------------------------------------------------
+# Heading levels at the raw boundary
+# ---------------------------------------------------------------------------
+
+
+def test_heading_level_mutation_in_render_is_detected() -> None:
+    content_state = {
+        "blocks": [_block("header-two", "Section")],
+        "entityMap": [],
+    }
+    html = "<h1>Section</h1>"
+    report = evaluate_export(_analysis(html, content_state=content_state), None, None, None)
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "source→html" and "heading" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+def test_heading_levels_round_trip_stays_clean() -> None:
+    content_state = {
+        "blocks": [
+            _block("header-three", "Tertiary"),
+            _block("header-six", "Deep"),
+        ],
+        "entityMap": [],
+    }
+    html = "<h3>Tertiary</h3><h6>Deep</h6>"
+    report = evaluate_export(_analysis(html, content_state=content_state), None, None, None)
+    assert report.is_complete(), [issue.message for issue in report.issues]
+
+
+# ---------------------------------------------------------------------------
+# Per-item media resolution and rendered identity
+# ---------------------------------------------------------------------------
+
+
+def _media_source(entity_key: str, media_ids: list[str]) -> dict:
+    return {
+        "blocks": [_atomic(entity_key)],
+        "entityMap": [
+            {
+                "key": entity_key,
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": mid} for mid in media_ids]},
+                },
+            }
+        ],
+    }
+
+
+def test_mixed_media_resolution_identifies_the_unresolved_item() -> None:
+    content_state = _media_source("m1", ["photo-a", "photo-b"])
+    html = '<figure><img data-media-id="photo-a" src="https://example.com/a.jpg"></figure>'
+    report = evaluate_export(
+        _analysis(
+            html,
+            content_state=content_state,
+            media_entities={"photo-a": {"media_id": "photo-a"}},
+        ),
+        {},
+        None,
+        None,
+    )
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-b" in issue.message
+        for issue in report.issues
+    )
+
+
+def test_media_identity_substitution_is_detected() -> None:
+    content_state = _media_source("m1", ["photo-a", "photo-b"])
+    html = (
+        '<figure><img data-media-id="photo-a" src="https://example.com/a.jpg"></figure>'
+        '<figure><img data-media-id="photo-a" src="https://example.com/a.jpg"></figure>'
+    )
+    report = evaluate_export(
+        _analysis(
+            html,
+            content_state=content_state,
+            media_entities={
+                "photo-a": {"media_id": "photo-a"},
+                "photo-b": {"media_id": "photo-b"},
+            },
+        ),
+        {},
+        None,
+        None,
+    )
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-b" in issue.message
+        for issue in report.issues
+    )
+
+
+def test_media_identity_matches_in_clean_render() -> None:
+    content_state = _media_source("m1", ["photo-a", "photo-b"])
+    html = (
+        '<figure><img data-media-id="photo-a" src="https://example.com/a.jpg">'
+        "<figcaption>First</figcaption></figure>"
+        '<figure><img data-media-id="photo-b" src="https://example.com/b.jpg">'
+        "<figcaption>Second</figcaption></figure>"
+    )
+    report = evaluate_export(
+        _analysis(
+            html,
+            content_state=content_state,
+            media_entities={
+                "photo-a": {"media_id": "photo-a"},
+                "photo-b": {"media_id": "photo-b"},
+            },
+        ),
+        {},
+        None,
+        None,
+    )
+    assert report.is_complete(), [issue.message for issue in report.issues]
+
+
+def test_unresolved_media_flagged_by_renderer_is_not_double_reported() -> None:
+    content_state = _media_source("m1", ["photo-1"])
+    html = '<figure data-fidelity="unresolved-media" data-media-count="1"></figure>'
+    report = evaluate_export(
+        _analysis(html, content_state=content_state, media_entities={}),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert any(
+        issue.stage == "article_html" and issue.source_type == "media"
+        for issue in errors
+    )
+    assert not any(
+        issue.stage == "source→html" and issue.source_type == "media"
+        for issue in errors
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-kind ordering
+# ---------------------------------------------------------------------------
+
+
+def test_cross_kind_reordering_is_detected() -> None:
+    content_state = {
+        "blocks": [
+            _block("header-two", "Section"),
+            _block("unstyled", "Body text."),
+        ],
+        "entityMap": [],
+    }
+    html = "<p>Body text.</p><h2>Section</h2>"
+    report = evaluate_export(_analysis(html, content_state=content_state), None, None, None)
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "source→html" and "order" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+# ---------------------------------------------------------------------------
 # Clean canonical round trip must stay clean
 # ---------------------------------------------------------------------------
 

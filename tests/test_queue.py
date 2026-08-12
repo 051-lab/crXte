@@ -247,7 +247,9 @@ async def test_article_export_records_fidelity_issues(
         for issue in completed.fidelity_issues
     )
     assert "content issue(s)" in completed.phase
-    assert completed.fidelity_issues[0].content_preview == "Lead paragraph."
+    assert any(
+        issue.content_preview == "Lead paragraph." for issue in completed.fidelity_issues
+    )
     database.close()
 
 

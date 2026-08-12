@@ -10,6 +10,7 @@ from x_media_downloader.article_html import to_html
 from x_media_downloader.documents import render_markdown, render_pdf
 from x_media_downloader.fidelity import (
     check_markdown,
+    check_pdf,
     compare_blocks,
     evaluate_export,
     scan_html,
@@ -149,6 +150,19 @@ def test_scan_html_records_lists_quotes_headings_and_media() -> None:
     ]
 
 
+def test_scan_html_records_every_media_item_in_a_figure() -> None:
+    html = (
+        '<figure><img data-media-id="photo-a">'
+        '<img data-media-id="photo-b"><figcaption>Gallery</figcaption></figure>'
+    )
+    records, audit = scan_html(html)
+    assert audit.is_complete()
+    assert [(record.kind, record.media_id, record.plain) for record in records] == [
+        ("image", "photo-a", "Gallery"),
+        ("image", "photo-b", "Gallery"),
+    ]
+
+
 def test_compare_blocks_detects_dropped_paragraph() -> None:
     html = "<p>First</p><p>Gone</p><p>Last</p>"
     records, audit = scan_html(html)
@@ -175,7 +189,7 @@ def test_check_markdown_accepts_matching_fences_and_rejects_missing() -> None:
     markdown = (
         "# Fidelity fixture\n\nBy Author (@handle)\n\n"
         "Intro paragraph.\n\n"
-        "## Section One\n\n"
+        "### Section One\n\n"
         "- First bullet\n- Second bullet\n\n"
         "> A quoted insight\n\n"
         "```\nfirst\n```\n\n"
@@ -203,7 +217,7 @@ def test_check_markdown_paragraph_heading_quote_and_list_presence() -> None:
     records, _audit = scan_html(html)
     markdown = (
         "# Title\n\nBy A (@b)\n\n"
-        "## My Heading\n\n"
+        "### My Heading\n\n"
         "Some **bold** text with an [inline link](<https://example.com/x>).\n\n"
         "> Think deeply\n\n"
         "- Alpha\n- Beta\n"
@@ -370,3 +384,173 @@ def test_plain_post_without_article_is_not_audited(tmp_path: Path) -> None:
     )
     markdown = render_markdown(analysis, {})
     assert evaluate_export(analysis, {}, markdown, None).is_complete()
+
+
+# ---------------------------------------------------------------------------
+# compare_blocks multiplicity, ordering, and heading levels
+# ---------------------------------------------------------------------------
+
+
+def test_compare_blocks_detects_duplicate_quote_substitution() -> None:
+    html = "<blockquote>Q</blockquote><blockquote>Q</blockquote><blockquote>R</blockquote>"
+    records, _audit = scan_html(html)
+    report = compare_blocks(records, [records[0], records[2], records[2]])
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "document" and "quote" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+def test_compare_blocks_detects_duplicate_list_substitution() -> None:
+    html = "<ul><li>A</li><li>A</li><li>B</li></ul>"
+    records, _audit = scan_html(html)
+    report = compare_blocks(records, [records[0], records[2], records[2]])
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "document" and "list" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+def test_compare_blocks_detects_duplicate_paragraph_substitution() -> None:
+    html = "<p>A</p><p>B</p><p>C</p>"
+    records, _audit = scan_html(html)
+    report = compare_blocks(records, [records[0], records[1], records[1]])
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "document" and "paragraph" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+def test_compare_blocks_detects_heading_level_mutation() -> None:
+    from dataclasses import replace
+
+    html = "<h2>Section</h2>"
+    records, _audit = scan_html(html)
+    report = compare_blocks(records, [replace(records[0], level=3)])
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "document" and "heading" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+def test_compare_blocks_detects_code_reorder() -> None:
+    html = "<pre>code-A</pre><pre>code-B</pre><pre>code-C</pre>"
+    records, _audit = scan_html(html)
+    report = compare_blocks(records, [records[1], records[0], records[2]])
+    assert not report.is_complete()
+    assert any(
+        issue.stage == "document" and "code" in issue.message.lower()
+        for issue in report.issues
+    )
+
+
+def test_compare_blocks_accepts_legitimate_duplicates_and_levels() -> None:
+    html = (
+        "<p>A</p><p>A</p><h2>H</h2><h2>H</h2>"
+        "<blockquote>Q</blockquote><blockquote>Q</blockquote>"
+        "<ul><li>X</li><li>X</li></ul>"
+    )
+    records, _audit = scan_html(html)
+    assert compare_blocks(records, records).is_complete()
+
+
+# ---------------------------------------------------------------------------
+# check_markdown multiplicity and heading levels
+# ---------------------------------------------------------------------------
+
+
+def test_check_markdown_duplicate_paragraph_not_duplicated_in_output() -> None:
+    records, _audit = scan_html("<p>A</p><p>A</p>")
+    markdown = "# Title\n\nBy A (@b)\n\nA\n"
+    report = check_markdown(records, set(), markdown)
+    assert not report.is_complete()
+    assert any("paragraph" in issue.message.lower() for issue in report.errors())
+
+
+def test_check_markdown_duplicate_quote_substitution_is_detected() -> None:
+    records, _audit = scan_html(
+        "<blockquote>Q</blockquote><blockquote>Q</blockquote><blockquote>R</blockquote>"
+    )
+    markdown = "# Title\n\n> Q\n> R\n> R\n"
+    report = check_markdown(records, set(), markdown)
+    assert not report.is_complete()
+    assert any("quote" in issue.message.lower() for issue in report.errors())
+
+
+def test_check_markdown_duplicate_list_item_substitution_is_detected() -> None:
+    records, _audit = scan_html("<ul><li>A</li><li>A</li><li>B</li></ul>")
+    markdown = "# Title\n\n- A\n- B\n- B\n"
+    report = check_markdown(records, set(), markdown)
+    assert not report.is_complete()
+    assert any("list" in issue.message.lower() for issue in report.errors())
+
+
+def test_check_markdown_duplicate_heading_substitution_and_level_change() -> None:
+    records, _audit = scan_html(
+        "<h2>H</h2><h2>H</h2><h2>J</h2>"
+    )
+    markdown = "# Title\n\n# H\n# J\n## J\n"
+    report = check_markdown(records, set(), markdown)
+    assert not report.is_complete()
+    assert any(
+        "heading" in issue.message.lower() for issue in report.errors()
+    )
+
+
+def test_check_markdown_legitimate_duplicates_stay_clean() -> None:
+    records, _audit = scan_html(
+        "<p>A</p><p>A</p><h2>H</h2><h2>H</h2><ul><li>X</li><li>X</li></ul>"
+    )
+    markdown = "# Title\n\nA\n\nA\n\n### H\n\n### H\n\n- X\n- X\n"
+    report = check_markdown(records, set(), markdown)
+    assert report.is_complete(), [issue.message for issue in report.issues]
+
+
+# ---------------------------------------------------------------------------
+# check_pdf code multiplicity
+# ---------------------------------------------------------------------------
+
+
+def _minimal_pdf(*runs: str) -> bytes:
+    """A valid minimal PDF whose text layer contains the given literal runs."""
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+    ]
+    content = f"BT /F1 12 Tf 72 100 Td {' '.join(f'({run}) Tj' for run in runs)} ET"
+    objects.append(
+        f"<< /Length {len(content)} >>\nstream\n{content}\nendstream".encode()
+    )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{index} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_pos = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \n"
+    out += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n"
+        f"{xref_pos}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+def test_check_pdf_code_block_multiplicity_is_an_error() -> None:
+    records, _audit = scan_html("<pre>const x = 1</pre><pre>const x = 1</pre>")
+    report = check_pdf(records, set(), _minimal_pdf("const x = 1"))
+    assert not report.is_complete()
+    assert any("code" in issue.message.lower() for issue in report.errors())
+
+
+def test_check_pdf_matching_code_block_multiplicity_stays_clean() -> None:
+    records, _audit = scan_html("<pre>const x = 1</pre><pre>const x = 1</pre>")
+    report = check_pdf(records, set(), _minimal_pdf("const x = 1", "const x = 1"))
+    assert report.is_complete(), [issue.message for issue in report.issues]
