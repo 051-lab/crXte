@@ -23,6 +23,15 @@ _BLOCK_KINDS = {
     "code-block": "code",
 }
 
+_HEADER_LEVELS = {
+    "header-one": 1,
+    "header-two": 2,
+    "header-three": 3,
+    "header-four": 4,
+    "header-five": 5,
+    "header-six": 6,
+}
+
 _ENTITY_KINDS = {
     "DIVIDER": "divider",
     "MARKDOWN": "code",
@@ -39,7 +48,14 @@ def extract_known_block_kinds() -> dict[str, str]:
 
 
 def header_level(block_type: str) -> int:
-    return int(block_type.rsplit("-", 1)[1])
+    """Map a raw header block type to its heading level."""
+    try:
+        return _HEADER_LEVELS[block_type]
+    except KeyError:
+        suffix = block_type.rsplit("-", 1)[-1]
+        if suffix.isdigit():
+            return int(suffix)
+        raise ValueError(f"unsupported header block type: {block_type!r}") from None
 
 
 def entity_kind(entity_type: str) -> str | None:

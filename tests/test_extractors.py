@@ -325,3 +325,21 @@ async def test_analyze_article_classifies_document_media(monkeypatch) -> None:
     ]
     assert analysis.attachments[2].video_ordinal == 1
     assert analysis.attachments[2].qualities[0].id == "q-best"
+
+
+def test_header_level_maps_word_suffixes_to_levels() -> None:
+    from x_media_downloader.extract_extractors import header_level
+
+    assert header_level("header-one") == 1
+    assert header_level("header-two") == 2
+    assert header_level("header-three") == 3
+    assert header_level("header-four") == 4
+    assert header_level("header-five") == 5
+    assert header_level("header-six") == 6
+
+
+def test_header_level_rejects_unknown_header_types() -> None:
+    from x_media_downloader.extract_extractors import header_level
+
+    with pytest.raises(ValueError):
+        header_level("header-twenty")
