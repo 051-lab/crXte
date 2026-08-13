@@ -68,9 +68,17 @@ Exact behavior:
 * A MEDIA item is only "resolved" when its `mediaId` is present in the
   article `media_entities` map (or the export's included sources). Resolution
   is audited **per item**: each raw media record must be resolved, or covered
-  by the renderer's `unresolved-media` marker, or it produces an error naming
-  the specific `mediaId`. A mixed entity where one item resolves and another
-  does not is therefore reported, not masked by the successful item.
+  by an `unresolved-media` marker from *its own* MEDIA entity, or it produces
+  an error naming the specific `mediaId`. A mixed entity where one item
+  resolves and another does not is therefore reported, not masked by the
+  successful item.
+* `unresolved-media` markers are attributed to their originating MEDIA
+  entity, not to the whole article: markers (in rendered order) are paired
+  with fully-unresolved raw MEDIA entities (in source order), and a marker
+  only covers an entity when its `data-media-count` matches that entity's
+  item count. A marker from one entity can never suppress reporting for
+  unresolved items in another entity; if counts disagree, the items are
+  conservatively reported.
 * Rendered media identity is verified by `data-media-id`: every known source
   media item must appear with the correct `mediaId` in the rendered figures.
   Substituting one item's identity for another (source `A,B` rendered as
@@ -114,16 +122,19 @@ order-sensitive:
 ## Media reference verification
 
 `check_markdown` receives the *known* document-media mappings produced by the
-renderer pipeline (`_markdown_media_target`). Ordinary relative Markdown
-links such as `[Documentation](docs/readme.md)` are not media references and
-are never counted toward media expectations. Media verification proceeds in
+renderer pipeline (`_markdown_media_target`). Media verification proceeds in
 two layers:
 
-1. Legacy count check: the number of non-absolute link targets must reach
-   the number of included article media records.
+1. Legacy compatibility count: the number of non-absolute link targets in
+   the Markdown output must reach the number of included article media
+   records. This layer is intentionally broad — it counts any
+   non-http(s)/https target, including ordinary relative links such as
+   `[Documentation](docs/readme.md)`, so it can prove presence of *some*
+   reference but never *which* item was referenced.
 2. Exact known-reference check (`required_targets`): every selected article
    media item's expected relative target must literally appear in the
-   Markdown output.
+   Markdown output. Unrelated relative links cannot satisfy this check, so
+   they cannot mask a missing reference for a selected media item.
 
 Intentional exclusion is respected: when `include_document_media` is off,
 `document_media` is empty and no media item is *included*, so no Markdown/PDF
@@ -148,7 +159,10 @@ inventoried, only *included* items are required in document outputs.
 * Media figure expectations assume the renderer is deterministic (it is), and
   per-kind availability is resolved through `media_entities`; attachments
   whose source metadata diverges from `media_entities` are treated as
-  unresolved and surfaced.
+  unresolved and surfaced. Marker attribution assumes markers and raw MEDIA
+  entities appear in the same relative order (the renderer renders blocks
+  sequentially); if an article's marker count ever disagreed with its
+  unresolved-entity count, attribution falls back to reporting the items.
 * The Markdown body-heading check assumes a single H1 document title; a
   future multi-title layout would need that assumption revisited.
 * PDF text-layer checks are best-effort for paragraphs/headings (warnings);
@@ -158,9 +172,9 @@ inventoried, only *included* items are required in document outputs.
 ## Verification
 
 Regression suite: `tests/test_fidelity_raw_source.py` (raw-source boundary,
-including the 13-fence article shape and per-item media identity),
-`tests/test_fidelity.py` (document stage, markdown/pdf, media targets),
-`tests/test_extractors.py` (heading level mapping), `tests/test_queue.py`
-(phase semantics, media exclusion). The full suite is 159 tests. Live
-reference article used in manual validation:
+including the 13-fence article shape, per-item media identity, and
+cross-entity marker attribution), `tests/test_fidelity.py` (document stage,
+markdown/pdf, media targets), `tests/test_extractors.py` (heading level
+mapping), `tests/test_queue.py` (phase semantics, media exclusion). The full
+suite is 162 tests. Live reference article used in manual validation:
 `https://x.com/RohOnChain/status/2080296261576687751` (13 code sections).
