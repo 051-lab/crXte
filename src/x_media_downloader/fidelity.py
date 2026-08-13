@@ -97,6 +97,7 @@ class FidelityIssue:
     entity_type: str | None = None
     message: str = ""
     content_preview: str | None = None
+    media_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +160,7 @@ def _issue(
     block_index: int | None = None,
     entity_type: str | None = None,
     preview: str | None = None,
+    media_count: int | None = None,
 ) -> FidelityIssue:
     return FidelityIssue(
         severity=severity,
@@ -168,6 +170,7 @@ def _issue(
         entity_type=entity_type,
         message=message,
         content_preview=preview,
+        media_count=media_count,
     )
 
 
@@ -221,6 +224,16 @@ def _media_id_of(element: Tag) -> str | None:
         value = candidate.get("data-media-id")
         if isinstance(value, str) and value:
             return value
+    return None
+
+
+def _media_count_of(element: Tag, marker: str) -> int | None:
+    """The renderer's item count for an unresolved-media marker, if present."""
+    if marker != "unresolved-media":
+        return None
+    value = element.get("data-media-count")
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
     return None
 
 
@@ -293,6 +306,7 @@ def scan_html(html: str) -> tuple[tuple[ItemRecord, ...], FidelityReport]:
                     block_index=index,
                     entity_type=entity_type,
                     preview=_element_text(child) or None,
+                    media_count=_media_count_of(child, marker),
                 )
             )
         if name in {f"h{level}" for level in range(1, 7)}:
@@ -767,12 +781,34 @@ def compare_source_html(
                 )
 
     media_records = [record for record in raw_records if record.kind == "media"]
-    renderer_flagged_media = any(
-        issue.stage == "article_html" and issue.source_type == "media"
+    marker_counts = [
+        issue.media_count
         for issue in audit.issues
-    )
+        if issue.stage == "article_html" and issue.source_type == "media"
+    ]
+    groups: list[list[ItemRecord]] = []
     for record in media_records:
-        if record.media_id in known_ids or renderer_flagged_media:
+        if groups and groups[-1][0].source_index == record.source_index:
+            groups[-1].append(record)
+        else:
+            groups.append([record])
+    marker_covered: set[str] = set()
+    marker_index = 0
+    for group in groups:
+        unresolved = [
+            record for record in group if record.media_id not in known_ids
+        ]
+        if not unresolved:
+            continue
+        if (
+            len(unresolved) == len(group)
+            and marker_index < len(marker_counts)
+            and marker_counts[marker_index] == len(group)
+        ):
+            marker_covered.update(record.media_id for record in group)
+            marker_index += 1
+    for record in media_records:
+        if record.media_id in known_ids or record.media_id in marker_covered:
             continue
         issues.append(
             _issue(
