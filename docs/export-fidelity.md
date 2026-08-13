@@ -73,12 +73,19 @@ Exact behavior:
   resolves and another does not is therefore reported, not masked by the
   successful item.
 * `unresolved-media` markers are attributed to their originating MEDIA
-  entity, not to the whole article: markers (in rendered order) are paired
-  with fully-unresolved raw MEDIA entities (in source order), and a marker
-  only covers an entity when its `data-media-count` matches that entity's
-  item count. A marker from one entity can never suppress reporting for
-  unresolved items in another entity; if counts disagree, the items are
-  conservatively reported.
+  entity. The source inventory carries each raw MEDIA record's Draft/X entity
+  key (`ItemRecord.entity_key`), and the renderer emits the same key on the
+  marker (`data-entity-key`, attribute-escaped). Attribution is entity-local:
+  a keyed marker is matched to its own raw MEDIA entity, and the raw entities
+  are grouped per entity key, so two MEDIA entities referenced from the same
+  atomic block remain distinct. Markers without an entity key (legacy or
+  hand-written HTML) fall back to structural pairing in order.
+  **Consume-on-consider:** a marker that is considered for a MEDIA construct
+  is consumed by that construct even when its `data-media-count` disagrees
+  with the entity's item count — it can never migrate forward to a later
+  entity. A marker only covers an entity when its count matches the entity's
+  item count and the whole entity is unresolved; otherwise the entity's items
+  are conservatively reported.
 * Rendered media identity is verified by `data-media-id`: every known source
   media item must appear with the correct `mediaId` in the rendered figures.
   Substituting one item's identity for another (source `A,B` rendered as
@@ -159,10 +166,11 @@ inventoried, only *included* items are required in document outputs.
 * Media figure expectations assume the renderer is deterministic (it is), and
   per-kind availability is resolved through `media_entities`; attachments
   whose source metadata diverges from `media_entities` are treated as
-  unresolved and surfaced. Marker attribution assumes markers and raw MEDIA
-  entities appear in the same relative order (the renderer renders blocks
-  sequentially); if an article's marker count ever disagreed with its
-  unresolved-entity count, attribution falls back to reporting the items.
+  unresolved and surfaced. Entity-key attribution requires the marker to
+  carry the source entity key; markers produced before that attribute existed
+  (or any marker lacking it) fall back to structural order pairing with
+  consume-on-consider semantics, which stays conservative but cannot prove
+  entity identity as strongly.
 * The Markdown body-heading check assumes a single H1 document title; a
   future multi-title layout would need that assumption revisited.
 * PDF text-layer checks are best-effort for paragraphs/headings (warnings);
@@ -172,9 +180,10 @@ inventoried, only *included* items are required in document outputs.
 ## Verification
 
 Regression suite: `tests/test_fidelity_raw_source.py` (raw-source boundary,
-including the 13-fence article shape, per-item media identity, and
-cross-entity marker attribution), `tests/test_fidelity.py` (document stage,
-markdown/pdf, media targets), `tests/test_extractors.py` (heading level
-mapping), `tests/test_queue.py` (phase semantics, media exclusion). The full
-suite is 162 tests. Live reference article used in manual validation:
+including the 13-fence article shape, per-item media identity, entity-local
+marker attribution, marker migration, and same-block multi-entity regressions),
+`tests/test_fidelity.py` (document stage, markdown/pdf, media targets),
+`tests/test_extractors.py` (heading level mapping), `tests/test_queue.py`
+(phase semantics, media exclusion). The full suite is 166 tests. Live
+reference article used in manual validation:
 `https://x.com/RohOnChain/status/2080296261576687751` (13 code sections).
