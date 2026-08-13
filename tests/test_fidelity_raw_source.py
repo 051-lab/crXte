@@ -772,6 +772,139 @@ def test_unresolved_media_flagged_by_renderer_is_not_double_reported() -> None:
     )
 
 
+def test_unresolved_marker_in_one_entity_does_not_mask_another_entity() -> None:
+    content_state = {
+        "blocks": [
+            _atomic("m1"),
+            _atomic("m2"),
+        ],
+        "entityMap": [
+            {
+                "key": "m1",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-a"}]},
+                },
+            },
+            {
+                "key": "m2",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {
+                        "mediaItems": [{"mediaId": "photo-b"}, {"mediaId": "photo-c"}]
+                    },
+                },
+            },
+        ],
+    }
+    html = (
+        '<figure data-fidelity="unresolved-media" data-media-count="1"></figure>'
+        '<figure><img data-media-id="photo-b" src="https://example.com/b.jpg"></figure>'
+    )
+    report = evaluate_export(
+        _analysis(
+            html,
+            content_state=content_state,
+            media_entities={"photo-b": {"media_id": "photo-b"}},
+        ),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert any(
+        issue.stage == "article_html" and issue.source_type == "media"
+        for issue in errors
+    )
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-c" in issue.message
+        for issue in errors
+    )
+
+
+def test_multiple_fully_unresolved_entities_are_each_covered_by_their_marker() -> None:
+    content_state = {
+        "blocks": [
+            _atomic("m1"),
+            _atomic("m2"),
+        ],
+        "entityMap": [
+            {
+                "key": "m1",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-a"}]},
+                },
+            },
+            {
+                "key": "m2",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {
+                        "mediaItems": [{"mediaId": "photo-b"}, {"mediaId": "photo-c"}]
+                    },
+                },
+            },
+        ],
+    }
+    html = (
+        '<figure data-fidelity="unresolved-media" data-media-count="1"></figure>'
+        '<figure data-fidelity="unresolved-media" data-media-count="2"></figure>'
+    )
+    report = evaluate_export(
+        _analysis(html, content_state=content_state, media_entities={}),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert (
+        sum(
+            1
+            for issue in errors
+            if issue.stage == "article_html" and issue.source_type == "media"
+        )
+        == 2
+    )
+    assert not any(
+        issue.stage == "source→html" and issue.source_type == "media"
+        for issue in errors
+    )
+
+
+def test_unresolved_marker_with_wrong_count_does_not_suppress_items() -> None:
+    content_state = {
+        "blocks": [_atomic("m1")],
+        "entityMap": [
+            {
+                "key": "m1",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {
+                        "mediaItems": [{"mediaId": "photo-a"}, {"mediaId": "photo-b"}]
+                    },
+                },
+            }
+        ],
+    }
+    html = '<figure data-fidelity="unresolved-media" data-media-count="1"></figure>'
+    report = evaluate_export(
+        _analysis(html, content_state=content_state, media_entities={}),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-b" in issue.message
+        for issue in errors
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cross-kind ordering
 # ---------------------------------------------------------------------------
