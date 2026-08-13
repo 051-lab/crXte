@@ -905,6 +905,166 @@ def test_unresolved_marker_with_wrong_count_does_not_suppress_items() -> None:
     )
 
 
+def test_mismatched_marker_does_not_migrate_to_a_later_entity() -> None:
+    """A marker that fails its own entity's count check must never be reused
+    to cover a later entity's unresolved items."""
+    content_state = {
+        "blocks": [
+            _atomic("m1"),
+            _atomic("m2"),
+        ],
+        "entityMap": [
+            {
+                "key": "m1",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {
+                        "mediaItems": [{"mediaId": "photo-a"}, {"mediaId": "photo-b"}]
+                    },
+                },
+            },
+            {
+                "key": "m2",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-c"}]},
+                },
+            },
+        ],
+    }
+    html = '<figure data-fidelity="unresolved-media" data-media-count="1"></figure>'
+    report = evaluate_export(
+        _analysis(html, content_state=content_state, media_entities={}),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert any(
+        issue.stage == "article_html" and issue.source_type == "media"
+        for issue in errors
+    )
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-c" in issue.message
+        for issue in errors
+    )
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-a" in issue.message
+        for issue in errors
+    )
+
+
+def test_two_media_entities_in_one_atomic_block_are_attributed_separately() -> None:
+    """MEDIA entity ranges are per-entity even when they share one atomic block;
+    a marker for one entity cannot cover the other entity's missing items."""
+    content_state = {
+        "blocks": [
+            _block("atomic", " ", entityRanges=[{"key": "m1"}, {"key": "m2"}]),
+        ],
+        "entityMap": [
+            {
+                "key": "m1",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-a"}]},
+                },
+            },
+            {
+                "key": "m2",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-b"}]},
+                },
+            },
+        ],
+    }
+    html = '<figure data-fidelity="unresolved-media" data-media-count="1"></figure>'
+    report = evaluate_export(
+        _analysis(html, content_state=content_state, media_entities={}),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert any(
+        issue.stage == "article_html" and issue.source_type == "media"
+        for issue in errors
+    )
+    assert any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-b" in issue.message
+        for issue in errors
+    )
+    assert not any(
+        issue.stage == "source→html"
+        and issue.source_type == "media"
+        and "photo-a" in issue.message
+        for issue in errors
+    )
+
+
+def test_same_block_media_entities_round_trip_with_entity_key_markers() -> None:
+    """The real renderer emits one marker per entity range; the keyed marker
+    accounts only for its own entity's construct."""
+    media_payload = {
+        "photo-b": {
+            "media_id": "photo-b",
+            "media_info": {
+                "original_img_url": "https://example.com/b.jpg",
+                "original_img_width": 10,
+                "original_img_height": 10,
+            },
+        },
+    }
+    content_state = {
+        "blocks": [
+            _block("atomic", " ", entityRanges=[{"key": "m1"}, {"key": "m2"}]),
+        ],
+        "entityMap": [
+            {
+                "key": "m1",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-a"}]},
+                },
+            },
+            {
+                "key": "m2",
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "photo-b"}]},
+                },
+            },
+        ],
+    }
+    html = "".join(to_html({"content_state": content_state, "media_entities": media_payload}))
+    assert 'data-entity-key="m1"' in html
+    assert 'data-media-id="photo-b"' in html
+    report = evaluate_export(
+        _analysis(html, content_state=content_state, media_entities=media_payload),
+        None,
+        None,
+        None,
+    )
+    errors = report.errors()
+    assert not any(
+        issue.stage == "source→html" and issue.source_type == "media"
+        for issue in errors
+    )
+    marker_issues = [
+        issue
+        for issue in errors
+        if issue.stage == "article_html" and issue.source_type == "media"
+    ]
+    assert len(marker_issues) == 1
+    assert marker_issues[0].entity_key == "m1"
+
+
 # ---------------------------------------------------------------------------
 # Cross-kind ordering
 # ---------------------------------------------------------------------------

@@ -212,7 +212,35 @@ def test_unresolved_media_entity_is_marked_and_caption_kept() -> None:
     html = render(article)
 
     assert 'data-fidelity="unresolved-media"' in html
+    assert 'data-entity-key="media"' in html
     assert "Kept caption" in html
+
+
+def test_unresolved_media_marker_entity_key_is_escaped() -> None:
+    article = _article(
+        [
+            {
+                "type": "atomic",
+                "text": " ",
+                "entityRanges": [{"key": 'x"><img src=x onerror=alert(1)>'}],
+            }
+        ],
+        [
+            {
+                "key": 'x"><img src=x onerror=alert(1)>',
+                "value": {
+                    "type": "MEDIA",
+                    "data": {"mediaItems": [{"mediaId": "broken"}]},
+                },
+            }
+        ],
+        media=[{"media_id": "broken", "media_info": {}}],
+    )
+
+    html = render(article)
+
+    assert 'data-entity-key="x"><img' not in html
+    assert "&quot;&gt;" in html
 
 
 def test_resolved_media_entity_has_no_marker() -> None:
