@@ -95,6 +95,7 @@ class FidelityIssue:
     source_type: str
     block_index: int | None = None
     entity_type: str | None = None
+    entity_key: str | None = None
     message: str = ""
     content_preview: str | None = None
     media_count: int | None = None
@@ -159,6 +160,7 @@ def _issue(
     *,
     block_index: int | None = None,
     entity_type: str | None = None,
+    entity_key: str | None = None,
     preview: str | None = None,
     media_count: int | None = None,
 ) -> FidelityIssue:
@@ -168,6 +170,7 @@ def _issue(
         source_type=source_type,
         block_index=block_index,
         entity_type=entity_type,
+        entity_key=entity_key,
         message=message,
         content_preview=preview,
         media_count=media_count,
@@ -184,6 +187,7 @@ class ItemRecord:
     code: str = ""
     media_id: str | None = None
     entity_type: str | None = None
+    entity_key: str | None = None
     raw_type: str | None = None
     source_index: int | None = None
 
@@ -200,6 +204,7 @@ def _record(
     code: str = "",
     media_id: str | None = None,
     entity_type: str | None = None,
+    entity_key: str | None = None,
     raw_type: str | None = None,
     source_index: int | None = None,
 ) -> ItemRecord:
@@ -210,6 +215,7 @@ def _record(
         code=code,
         media_id=media_id,
         entity_type=entity_type,
+        entity_key=entity_key,
         raw_type=raw_type,
         source_index=source_index,
     )
@@ -297,6 +303,14 @@ def scan_html(html: str) -> tuple[tuple[ItemRecord, ...], FidelityReport]:
                 source = "entity"
             elif marker == "unresolved-media":
                 source = "media"
+            entity_key_value = (
+                child.get("data-entity-key")
+                if marker == "unresolved-media"
+                else None
+            )
+            entity_key = (
+                str(entity_key_value) if isinstance(entity_key_value, str) else None
+            )
             issues.append(
                 _issue(
                     severity,
@@ -305,6 +319,7 @@ def scan_html(html: str) -> tuple[tuple[ItemRecord, ...], FidelityReport]:
                     _marker_message(marker, entity_type),
                     block_index=index,
                     entity_type=entity_type,
+                    entity_key=entity_key,
                     preview=_element_text(child) or None,
                     media_count=_media_count_of(child, marker),
                 )
@@ -499,6 +514,7 @@ def scan_content_state(content_state: object) -> tuple[tuple[ItemRecord, ...], F
                                 media_id=str(media_id),
                                 raw_type="atomic:media",
                                 entity_type=entity_type,
+                                entity_key=key,
                                 source_index=index,
                             )
                         )
@@ -781,32 +797,48 @@ def compare_source_html(
                 )
 
     media_records = [record for record in raw_records if record.kind == "media"]
-    marker_counts = [
-        issue.media_count
+    markers = [
+        issue
         for issue in audit.issues
         if issue.stage == "article_html" and issue.source_type == "media"
     ]
+    keyed_markers: dict[str, int | None] = {}
+    unkeyed_markers: list[int | None] = []
+    for marker in markers:
+        if marker.entity_key:
+            keyed_markers[marker.entity_key] = marker.media_count
+        else:
+            unkeyed_markers.append(marker.media_count)
+
+    def _group_id(record: ItemRecord) -> tuple[object, ...]:
+        if record.entity_key is not None:
+            return ("key", record.entity_key)
+        return ("block", record.source_index)
+
     groups: list[list[ItemRecord]] = []
     for record in media_records:
-        if groups and groups[-1][0].source_index == record.source_index:
+        if groups and _group_id(groups[-1][0]) == _group_id(record):
             groups[-1].append(record)
         else:
             groups.append([record])
     marker_covered: set[str] = set()
-    marker_index = 0
+    unkeyed_index = 0
     for group in groups:
         unresolved = [
             record for record in group if record.media_id not in known_ids
         ]
         if not unresolved:
             continue
-        if (
-            len(unresolved) == len(group)
-            and marker_index < len(marker_counts)
-            and marker_counts[marker_index] == len(group)
-        ):
+        count = len(group)
+        if group[0].entity_key is not None and group[0].entity_key in keyed_markers:
+            marker_count = keyed_markers.pop(group[0].entity_key)
+        elif unkeyed_index < len(unkeyed_markers):
+            marker_count = unkeyed_markers[unkeyed_index]
+            unkeyed_index += 1
+        else:
+            continue
+        if marker_count == count and len(unresolved) == count:
             marker_covered.update(record.media_id for record in group)
-            marker_index += 1
     for record in media_records:
         if record.media_id in known_ids or record.media_id in marker_covered:
             continue

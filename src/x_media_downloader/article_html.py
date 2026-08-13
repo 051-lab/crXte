@@ -312,7 +312,8 @@ def _render_atomic(block: dict, entities: dict[str, dict], media: dict[str, dict
     for item in raw_ranges:
         if not isinstance(item, dict):
             continue
-        entity = entities.get(str(item.get("key")))
+        key = str(item.get("key"))
+        entity = entities.get(key)
         if not entity:
             rendered.append(_unknown_content(block, "missing-entity", None))
             continue
@@ -357,6 +358,7 @@ def _render_atomic(block: dict, entities: dict[str, dict], media: dict[str, dict
             elif raw_items:
                 rendered.append(
                     f'<figure data-fidelity="unresolved-media" '
+                    f'data-entity-key="{escape(key, quote=True)}" '
                     f'data-media-count="{len(raw_items)}">{caption_html}</figure>'
                 )
         else:
