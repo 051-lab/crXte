@@ -28,6 +28,11 @@ class ContentKind(StrEnum):
     ARTICLE = "article"
 
 
+class Scope(StrEnum):
+    POST = "post"
+    THREAD = "thread"
+
+
 class AttachmentRole(StrEnum):
     POST_MEDIA = "post_media"
     ARTICLE_COVER = "article_cover"
@@ -80,6 +85,34 @@ class PostMetadata(BaseModel):
     author_handle: str
     text: str = ""
     posted_at: str | None = None
+    reply_to_post_id: str | None = None
+    reply_to_author: str | None = None
+    conversation_id: str | None = None
+    quoted_post_id: str | None = None
+    reposted_post_id: str | None = None
+    reply_count: int | None = None
+    quote_count: int | None = None
+
+
+class ThreadIssue(BaseModel):
+    code: str
+    message: str
+
+
+class ThreadMember(BaseModel):
+    post_id: str
+    url: str
+    analysis: Analysis
+    issue: ThreadIssue | None = None
+
+
+class ThreadAnalysis(BaseModel):
+    focal_post_id: str
+    root_post_id: str
+    author_handle: str
+    members: list[ThreadMember]
+    issues: list[ThreadIssue] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now)
 
 
 class Analysis(BaseModel):
@@ -90,11 +123,13 @@ class Analysis(BaseModel):
     content_kind: ContentKind = ContentKind.POST
     article: ArticleMetadata | None = None
     output_relative_dir: str | None = None
+    thread: ThreadAnalysis | None = None
     created_at: str = Field(default_factory=utc_now)
 
 
 class AnalyzeRequest(BaseModel):
     url: str = Field(min_length=10, max_length=500)
+    scope: Scope = Scope.POST
 
 
 class AttachmentSelection(BaseModel):
