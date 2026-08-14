@@ -148,7 +148,7 @@ def test_runner_patches_article_html_and_delegates(monkeypatch) -> None:
     monkeypatch.setattr(gallery_runner.gallery_dl, "main", lambda: 17)
 
     assert gallery_runner.main() == 17
-    assert twitter_article.to_html is to_html
+    assert twitter_article.to_html is gallery_runner._capturing_to_html
     assert twitter_article.process_text is original_process_text
 
 

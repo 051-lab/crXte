@@ -156,7 +156,7 @@ async def test_analyze_mixed_post_preserves_attachment_order(monkeypatch) -> Non
     all_probes_started = asyncio.Event()
     probe_count = 0
 
-    async def fake_gallery(_: str):
+    async def fake_gallery(_: str, *, capture_path: str | None = None):
         return post, media
 
     async def fake_ytdlp(_: str):
@@ -185,7 +185,7 @@ async def test_analyze_mixed_post_preserves_attachment_order(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_analyze_text_only_post_without_attachments(monkeypatch) -> None:
-    async def fake_gallery(_: str):
+    async def fake_gallery(_: str, *, capture_path: str | None = None):
         return {
             "author": {"name": "writer", "nick": "Writer"},
             "content": "A post with no media",
@@ -208,7 +208,7 @@ async def test_analyze_text_only_post_without_attachments(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_analyze_rejects_metadata_without_content(monkeypatch) -> None:
-    async def fake_gallery(_: str):
+    async def fake_gallery(_: str, *, capture_path: str | None = None):
         return {"author": {"name": "empty", "nick": "Empty"}}, []
 
     async def fake_ytdlp(_: str):
@@ -275,7 +275,7 @@ async def test_analyze_article_classifies_document_media(monkeypatch) -> None:
         ),
     ]
 
-    async def fake_gallery(_: str):
+    async def fake_gallery(_: str, *, capture_path: str | None = None):
         return post, media
 
     async def fake_ytdlp(_: str):
@@ -299,6 +299,8 @@ async def test_analyze_article_classifies_document_media(monkeypatch) -> None:
         "updated_at": "2026-07-21T11:00:00",
         "html": '<p>Body &amp; text</p><script>alert("x")</script>',
         "html_renderer_version": 1,
+        "content_state": None,
+        "media_entities": None,
     }
     assert [item.role.value for item in analysis.attachments] == [
         "article_cover",
@@ -323,3 +325,21 @@ async def test_analyze_article_classifies_document_media(monkeypatch) -> None:
     ]
     assert analysis.attachments[2].video_ordinal == 1
     assert analysis.attachments[2].qualities[0].id == "q-best"
+
+
+def test_header_level_maps_word_suffixes_to_levels() -> None:
+    from x_media_downloader.extract_extractors import header_level
+
+    assert header_level("header-one") == 1
+    assert header_level("header-two") == 2
+    assert header_level("header-three") == 3
+    assert header_level("header-four") == 4
+    assert header_level("header-five") == 5
+    assert header_level("header-six") == 6
+
+
+def test_header_level_rejects_unknown_header_types() -> None:
+    from x_media_downloader.extract_extractors import header_level
+
+    with pytest.raises(ValueError):
+        header_level("header-twenty")

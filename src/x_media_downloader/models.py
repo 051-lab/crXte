@@ -70,6 +70,8 @@ class ArticleMetadata(BaseModel):
     updated_at: str | None = None
     html: str = ""
     html_renderer_version: int = 0
+    content_state: dict | None = None
+    media_entities: dict | list | None = None
 
 
 class PostMetadata(BaseModel):
@@ -129,6 +131,18 @@ class RevealRequest(BaseModel):
     completed_file_index: int | None = Field(default=None, ge=0, strict=True)
 
 
+class FidelityIssue(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    severity: str
+    stage: str
+    source_type: str
+    block_index: int | None = None
+    entity_type: str | None = None
+    message: str = ""
+    content_preview: str | None = None
+
+
 class Job(BaseModel):
     id: str
     analysis_id: str
@@ -157,6 +171,7 @@ class Job(BaseModel):
     worker_pgid: int | None = None
     heartbeat_at: str | None = None
     error: str | None = None
+    fidelity_issues: list[FidelityIssue] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
 

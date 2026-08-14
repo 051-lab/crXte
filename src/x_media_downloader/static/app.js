@@ -578,6 +578,25 @@ function renderJobs() {
       error.textContent = job.error;
       body.append(error);
     }
+    if (job.fidelity_issues?.length) {
+      const fidelity = document.createElement("div");
+      fidelity.className = "job-fidelity";
+      const label = document.createElement("span");
+      label.textContent = "Fidelity report";
+      fidelity.append(label);
+      job.fidelity_issues.forEach((issue) => {
+        const item = document.createElement("p");
+        item.className = `fidelity-issue ${issue.severity}`;
+        item.textContent = issue.message;
+        if (issue.content_preview) {
+          const preview = document.createElement("code");
+          preview.textContent = issue.content_preview;
+          item.append(" — ", preview);
+        }
+        fidelity.append(item);
+      });
+      body.append(fidelity);
+    }
     const actions = jobActions(job);
     if (actions.length) {
       const actionBar = document.createElement("div");

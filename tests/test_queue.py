@@ -11,8 +11,10 @@ import x_media_downloader.queue as queue_module
 from x_media_downloader.database import Database
 from x_media_downloader.models import (
     Analysis,
+    ArticleMetadata,
     Attachment,
     AttachmentSelection,
+    ContentKind,
     Job,
     JobStatus,
     MediaType,
@@ -23,12 +25,51 @@ from x_media_downloader.models import (
 from x_media_downloader.queue import (
     DownloadQueue,
     QueueError,
+    _phase_with_fidelity,
     estimated_total,
     filename_base,
     output_lock,
     safe_component,
     ytdlp_progress_arguments,
 )
+
+
+def test_phase_with_fidelity_never_labels_content_loss_as_complete() -> None:
+    from x_media_downloader.fidelity import FidelityIssue, FidelityReport
+
+    clean = _phase_with_fidelity(2, FidelityReport())
+    assert clean == "Complete · 2 output(s)"
+
+    warnings = _phase_with_fidelity(
+        1,
+        FidelityReport(
+            (
+                FidelityIssue(
+                    severity="warning",
+                    stage="article_html",
+                    source_type="block",
+                    message="text was preserved.",
+                ),
+            )
+        ),
+    )
+    assert warnings == "Complete · 1 output(s) · 1 warning(s)"
+
+    errors = _phase_with_fidelity(
+        1,
+        FidelityReport(
+            (
+                FidelityIssue(
+                    severity="error",
+                    stage="source→html",
+                    source_type="block",
+                    message="A paragraph from the article source is missing.",
+                ),
+            )
+        ),
+    )
+    assert errors == "Finished with content issues · 1 output(s) · 1 content issue(s)"
+    assert "Complete" not in errors
 
 
 def video_analysis() -> Analysis:
@@ -150,6 +191,148 @@ async def test_markdown_only_text_post_completes_without_attachments(
     assert completed.total_steps == 1
     assert (tmp_path / "@writer_42.md").read_text() == "# A useful post\n"
     assert completed.completed_files == [str(tmp_path / "@writer_42.md")]
+    assert completed.fidelity_issues == []
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_article_export_records_fidelity_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "state.db")
+    analysis = Analysis(
+        id="analysis-article",
+        url="https://x.com/i/web/status/42",
+        post=PostMetadata(
+            post_id="42", author_name="Writer", author_handle="writer"
+        ),
+        attachments=[],
+        content_kind=ContentKind.ARTICLE,
+        article=ArticleMetadata(
+            id="art-1",
+            title="Intro",
+            html="<h1>Heading</h1><p>Lead paragraph.</p>",
+        ),
+    )
+    database.save_analysis(analysis)
+    job = Job(
+        id="job-article",
+        analysis_id=analysis.id,
+        url=analysis.url,
+        post=analysis.post,
+        article=analysis.article,
+        content_kind=ContentKind.ARTICLE,
+        selections=[],
+        outputs=[OutputFormat.MARKDOWN],
+        destination=str(tmp_path),
+    )
+    database.save_job(job)
+    monkeypatch.setattr(queue_module, "document_base", lambda _: "@writer_42")
+    monkeypatch.setattr(
+        queue_module,
+        "render_markdown",
+        lambda *_: b"# Intro\n\nBy Writer (@writer)\nSource: <https://x.com/i/web/status/42>\n",
+    )
+    monkeypatch.setattr(queue_module, "verify_markdown", lambda *_: None)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.fidelity_issues
+    assert any(
+        issue.severity == "error" and "paragraph" in issue.message
+        for issue in completed.fidelity_issues
+    )
+    assert "content issue(s)" in completed.phase
+    assert any(
+        issue.content_preview == "Lead paragraph." for issue in completed.fidelity_issues
+    )
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_article_fidelity_ignores_media_excluded_from_documents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(tmp_path / "state.db")
+    analysis = Analysis(
+        id="analysis-article-excluded",
+        url="https://x.com/i/web/status/84",
+        post=PostMetadata(
+            post_id="84", author_name="Artist", author_handle="artist"
+        ),
+        attachments=[
+            Attachment(
+                id="a-1",
+                index=1,
+                source_id="media-1",
+                media_type=MediaType.PHOTO,
+                extension="jpg",
+            )
+        ],
+        content_kind=ContentKind.ARTICLE,
+        article=ArticleMetadata(
+            id="art-1",
+            title="Intro",
+            html=(
+                "<h1>Intro</h1>"
+                '<figure><img data-media-id="media-1"></figure>'
+            ),
+            html_renderer_version=1,
+        ),
+    )
+    database.save_analysis(analysis)
+    job = Job(
+        id="job-article-excluded",
+        analysis_id=analysis.id,
+        url=analysis.url,
+        post=analysis.post,
+        article=analysis.article,
+        content_kind=ContentKind.ARTICLE,
+        selections=[AttachmentSelection(attachment_id="a-1")],
+        outputs=[OutputFormat.MEDIA, OutputFormat.MARKDOWN],
+        include_document_media=False,
+        destination=str(tmp_path),
+        layout_version=2,
+        output_dir=str(tmp_path / "@artist" / "84"),
+    )
+    database.save_job(job)
+    monkeypatch.setattr(queue_module, "document_base", lambda _: "@artist_84")
+
+    async def fake_download(
+        _job,
+        _analysis,
+        attachment,
+        destination,
+        _completed_base,
+        *,
+        target=None,
+        resolved_items=None,
+    ):
+        path = target or destination / f"photo-{attachment.index}.jpg"
+        path.write_bytes(b"image")
+        return path, 5
+
+    queue = DownloadQueue(database)
+    monkeypatch.setattr(queue, "_download_photo", fake_download)
+
+    def fake_markdown(_analysis, _media):
+        return b"# Intro\n\nBy Artist (@artist)\nSource: <https://x.com/i/web/status/84>\n"
+
+    monkeypatch.setattr(queue_module, "render_markdown", fake_markdown)
+    monkeypatch.setattr(queue_module, "verify_markdown", lambda *_: None)
+
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    assert all(
+        issue.source_type != "media" for issue in completed.fidelity_issues
+    )
     database.close()
 
 
@@ -219,6 +402,7 @@ async def test_multiple_photos_refresh_gallery_links_once(
     assert completed is not None
     assert completed.status == JobStatus.COMPLETED
     assert resolve_calls == 1
+    assert completed.fidelity_issues == []
     database.close()
 
 

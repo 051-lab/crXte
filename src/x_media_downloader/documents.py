@@ -471,6 +471,20 @@ def _document_content(
     return title, blocks, list(media)
 
 
+def document_blocks(
+    post: PostMetadata,
+    media: Sequence[DocumentMedia],
+    *,
+    article: ArticleMetadata | None = None,
+) -> tuple[str, list[Block], list[DocumentMedia]]:
+    """Return the canonical document title, body blocks, and non-body media.
+
+    Both the Markdown and PDF renderers consume this exact structure, so it is
+    the fidelity checkpoint for document exports.
+    """
+    return _document_content(post, article, media)
+
+
 def render_markdown_text(
     post: PostMetadata,
     media: Sequence[DocumentMedia],

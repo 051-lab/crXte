@@ -200,6 +200,11 @@ h1 span { color: var(--muted); }
 .progress-fill { height: 100%; width: 0; background: var(--signal); transition: width .35s ease; }
 .job-stats { display: flex; justify-content: space-between; gap: 10px; margin-top: 9px; color: var(--dim); font: 500 9px/1 var(--mono); }
 .job-error { margin: 12px 0 0; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.job-fidelity { display: grid; gap: 6px; margin-top: 14px; padding: 12px; border: 1px solid var(--line); background: #0b0e0c; }
+.job-fidelity > span { color: var(--dim); font: 600 8px/1 var(--mono); text-transform: uppercase; letter-spacing: .1em; }
+.fidelity-issue { margin: 0; color: var(--warning); font-size: 11px; overflow-wrap: anywhere; }
+.fidelity-issue.error { color: var(--danger); }
+.fidelity-issue code { color: var(--muted); font: 500 9px/1.4 var(--mono); }
 .completed-files { min-width: 0; margin-top: 15px; padding: 12px; border: 1px solid var(--line); background: #0b0e0c; }
 .completed-files > span { display: block; margin-bottom: 7px; color: var(--dim); font: 600 8px/1 var(--mono); text-transform: uppercase; letter-spacing: .1em; }
 .completed-files ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }

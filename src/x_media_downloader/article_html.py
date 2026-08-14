@@ -307,13 +307,15 @@ def _media_item_html(media_id: str, media: dict) -> str:
 def _render_atomic(block: dict, entities: dict[str, dict], media: dict[str, dict]) -> str:
     raw_ranges = block.get("entityRanges")
     if not isinstance(raw_ranges, list):
-        return ""
+        return _unknown_content(block, "missing-entity", None)
     rendered: list[str] = []
     for item in raw_ranges:
         if not isinstance(item, dict):
             continue
-        entity = entities.get(str(item.get("key")))
+        key = str(item.get("key"))
+        entity = entities.get(key)
         if not entity:
+            rendered.append(_unknown_content(block, "missing-entity", None))
             continue
         entity_type = _string(entity.get("type")).upper()
         data = entity.get("data")
@@ -332,6 +334,12 @@ def _render_atomic(block: dict, entities: dict[str, dict], media: dict[str, dict
             if len(lines) >= 2 and lines[0].startswith("```") and lines[-1] == "```":
                 code = "\n".join(lines[1:-1])
                 rendered.append(f"<pre><code>{escape(code)}</code></pre>")
+            elif markdown:
+                rendered.append(
+                    '<pre><code data-fidelity="atomic-markdown" '
+                    'data-entity-type="MARKDOWN">'
+                    f"{escape(markdown)}</code></pre>"
+                )
         elif entity_type == "MEDIA":
             raw_items = data.get("mediaItems")
             if not isinstance(raw_items, list):
@@ -343,11 +351,44 @@ def _render_atomic(block: dict, entities: dict[str, dict], media: dict[str, dict
                 media_id = str(media_item["mediaId"])
                 if media_html := _media_item_html(media_id, media.get(media_id, {})):
                     items.append(media_html)
+            caption = _string(data.get("caption"))
+            caption_html = f"<figcaption>{escape(caption)}</figcaption>" if caption else ""
             if items:
-                caption = _string(data.get("caption"))
-                caption_html = f"<figcaption>{escape(caption)}</figcaption>" if caption else ""
                 rendered.append(f"<figure>{''.join(items)}{caption_html}</figure>")
+            elif raw_items:
+                rendered.append(
+                    f'<figure data-fidelity="unresolved-media" '
+                    f'data-entity-key="{escape(key, quote=True)}" '
+                    f'data-media-count="{len(raw_items)}">{caption_html}</figure>'
+                )
+        else:
+            rendered.append(
+                _unknown_content(block, "unsupported-entity", entity_type, data)
+            )
     return "".join(rendered)
+
+
+def _entity_preview(data: dict, block: dict) -> str:
+    for key in ("text", "markdown", "formula", "caption", "title"):
+        value = _string(data.get(key)).strip()
+        if value:
+            return value
+    return _string(block.get("text")).strip()
+
+
+def _unknown_content(
+    block: dict, marker: str, entity_type: str | None, data: dict | None = None
+) -> str:
+    data = data or {}
+    preview = _entity_preview(data, block)
+    container = "pre" if "\n" in preview or "\r" in preview else "p"
+    type_attr = (
+        f' data-entity-type="{escape(entity_type or "", quote=True)}"' if entity_type else ""
+    )
+    return (
+        f"<{container} data-fidelity=\"{escape(marker, quote=True)}\"{type_attr}>"
+        f"{escape(preview)}</{container}>"
+    )
 
 
 def _render_block(block: dict, entities: dict[str, dict], media: dict[str, dict]) -> str:
@@ -357,7 +398,13 @@ def _render_block(block: dict, entities: dict[str, dict], media: dict[str, dict]
     if block_type == "code-block":
         return f"<pre><code>{escape(_string(block.get('text')))}</code></pre>"
     tag = _BLOCK_TAGS.get(block_type, "p")
-    return f"<{tag}>{_render_inline(block, entities)}</{tag}>"
+    content = _render_inline(block, entities)
+    if tag == "p" and block_type not in _BLOCK_TAGS:
+        return (
+            f'<p data-fidelity="unsupported-block" '
+            f'data-block-type="{escape(block_type, quote=True)}">{content}</p>'
+        )
+    return f"<{tag}>{content}</{tag}>"
 
 
 def to_html(article: object) -> list[str]:
