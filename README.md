@@ -60,6 +60,21 @@ X Media/
 
 Only selected outputs are created. Existing flat export files are not moved automatically; queue entries using the old layout are labeled **Legacy flat export**.
 
+### Author thread exports
+
+Choose **Author thread** above the link field to also export the same author's earlier posts in the focal post's reply chain. Thread exports live under the author and the root post's id:
+
+```text
+X Media/
+└── @handle/
+    └── root-post-id/
+        ├── thread.md
+        ├── thread.pdf
+        └── media/            # names are prefixed with each post's id
+```
+
+Thread discovery walks the public reply chain upward from the focal post and stops at the first post by a different author. Quotes, reposts, and replies by other people are never included. X does not publicly expose the replies below a post (the timeline, conversation, and search surfaces all require login cookies), so they are never part of a thread export; the document records when the focal post is known to have replies it could not include. Single-post exports are unchanged and remain the default.
+
 ## Supported exports
 
 - Public `https://x.com/<account>/status/<id>` links

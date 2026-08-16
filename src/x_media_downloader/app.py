@@ -17,7 +17,13 @@ from .config import STATIC_DIR, ffmpeg_available, ffprobe_available
 from .database import Database
 from .documents import DocumentError, render_markdown, render_pdf
 from .extractors import AnalysisError, analyze_url
-from .layout import LayoutError, build_export_layout, media_filename, post_relative_dir
+from .layout import (
+    LayoutError,
+    build_export_layout,
+    build_thread_export_layout,
+    media_filename,
+    post_relative_dir,
+)
 from .models import (
     Analysis,
     AnalyzeRequest,
@@ -210,10 +216,15 @@ def _reveal_job_target(job: Job, settings: Settings, body: RevealRequest) -> Non
 @app.post("/api/analyze", response_model=Analysis)
 async def analyze(body: AnalyzeRequest) -> Analysis:
     try:
-        analysis = await analyze_url(body.url)
+        analysis = await analyze_url(body.url, scope=body.scope)
     except AnalysisError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    analysis.output_relative_dir = post_relative_dir(analysis.post).as_posix()
+    if analysis.thread:
+        analysis.output_relative_dir = post_relative_dir(
+            analysis.thread.members[0].analysis.post
+        ).as_posix()
+    else:
+        analysis.output_relative_dir = post_relative_dir(analysis.post).as_posix()
     database.save_analysis(analysis)
     return analysis
 
@@ -226,7 +237,10 @@ async def create_job(body: CreateJobRequest) -> Job:
     _validate_selections(analysis, body.selections, body.outputs)
     destination = _validated_destination(body.destination or database.get_settings().download_dir)
     try:
-        layout = build_export_layout(destination, analysis)
+        if analysis.thread:
+            layout = build_thread_export_layout(destination, analysis.thread)
+        else:
+            layout = build_export_layout(destination, analysis)
     except LayoutError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     selection_key = _selection_key(

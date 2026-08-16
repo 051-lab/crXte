@@ -5,7 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import Analysis, Attachment, MediaType, PostMetadata, QualityOption
+from .models import Analysis, Attachment, MediaType, PostMetadata, QualityOption, ThreadAnalysis
 
 _WINDOWS_RESERVED = {
     "CON",
@@ -76,6 +76,24 @@ def build_export_layout(destination: Path, analysis: Analysis) -> ExportLayout:
         media_dir=output_dir / "media",
         markdown_path=output_dir / "post.md",
         pdf_path=output_dir / "post.pdf",
+    )
+    validate_export_paths(layout)
+    return layout
+
+
+def thread_media_name(member_post_id: str, filename: str) -> str:
+    return f"{member_post_id}-{filename}"
+
+
+def build_thread_export_layout(destination: Path, thread: ThreadAnalysis) -> ExportLayout:
+    root = destination.expanduser().resolve()
+    output_dir = root / post_relative_dir(thread.members[0].analysis.post)
+    layout = ExportLayout(
+        root=root,
+        output_dir=output_dir,
+        media_dir=output_dir / "media",
+        markdown_path=output_dir / "thread.md",
+        pdf_path=output_dir / "thread.pdf",
     )
     validate_export_paths(layout)
     return layout

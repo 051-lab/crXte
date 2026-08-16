@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
+from pypdf import PdfReader, PdfWriter
 
 from .models import (
     Analysis,
@@ -20,6 +21,7 @@ from .models import (
     MediaType,
     OutputFormat,
     PostMetadata,
+    ThreadAnalysis,
 )
 
 
@@ -855,3 +857,107 @@ def write_document(
     if output_format == OutputFormat.PDF:
         return write_pdf(path, post, media, article=article, source_url=source_url)
     raise ValueError(f"Unsupported document format: {output_format}")
+
+
+def _thread_post_url(thread: ThreadAnalysis, post_id: str) -> str:
+    return f"https://x.com/{thread.author_handle}/status/{post_id}"
+
+
+def _thread_header_markdown(thread: ThreadAnalysis) -> str:
+    lines = [
+        f"# Author thread · @{thread.author_handle}",
+        "",
+        f"Root post: <{_thread_post_url(thread, thread.root_post_id)}>",
+        f"Focal post: <{_thread_post_url(thread, thread.focal_post_id)}>",
+        f"Members: {len(thread.members)}",
+        "",
+        "## Thread issues",
+    ]
+    if thread.issues:
+        for issue in thread.issues:
+            lines.append(f"- `{issue.code}` — {issue.message}")
+    else:
+        lines.append("- None")
+    return "\n".join(lines)
+
+
+def render_thread_markdown(
+    thread: ThreadAnalysis, media_by_post: dict[str, dict[str, Path]]
+) -> bytes:
+    try:
+        sections = [_thread_header_markdown(thread)]
+        for member in thread.members:
+            member_media = media_by_post.get(member.post_id, {})
+            sections.append(render_markdown(member.analysis, member_media).decode("utf-8"))
+        return ("\n\n---\n\n".join(sections) + "\n").encode("utf-8")
+    except DocumentError:
+        raise
+    except Exception as error:
+        raise DocumentError("Could not render the thread document.") from error
+
+
+def _thread_header_pdf(thread: ThreadAnalysis) -> bytes:
+    from .models import ArticleMetadata
+
+    paragraphs = [
+        f"Root post: {_thread_post_url(thread, thread.root_post_id)}",
+        f"Focal post: {_thread_post_url(thread, thread.focal_post_id)}",
+        f"Members: {len(thread.members)}",
+    ]
+    if thread.issues:
+        paragraphs.append("Thread issues:")
+        paragraphs.extend(
+            f"{issue.code} — {issue.message}" for issue in thread.issues
+        )
+    html = "<p>" + "</p><p>".join(
+        html_escape(paragraph).replace("\n", "<br/>") for paragraph in paragraphs
+    ) + "</p>"
+    header = ArticleMetadata(
+        id=f"thread-{thread.root_post_id}",
+        title=f"Author thread · @{thread.author_handle}",
+        html=html,
+    )
+    output = BytesIO()
+    _build_pdf(
+        output,
+        PostMetadata(
+            post_id=thread.root_post_id,
+            author_name=thread.author_handle,
+            author_handle=thread.author_handle,
+        ),
+        [],
+        article=header,
+        source_url=_thread_post_url(thread, thread.root_post_id),
+    )
+    return output.getvalue()
+
+
+def _merge_thread_pdf(sections: list[bytes], thread: ThreadAnalysis) -> bytes:
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(_thread_header_pdf(thread))))
+    for section in sections:
+        writer.append(PdfReader(BytesIO(section)))
+    metadata = {
+        "/Title": f"Author thread · @{thread.author_handle}",
+        "/Subject": f"Root: {_thread_post_url(thread, thread.root_post_id)}",
+        "/Creator": "crXte",
+    }
+    writer.add_metadata(metadata)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def render_thread_pdf(
+    thread: ThreadAnalysis, media_by_post: dict[str, dict[str, Path]]
+) -> bytes:
+    try:
+        sections: list[bytes] = []
+        for member in thread.members:
+            member_media = media_by_post.get(member.post_id, {})
+            sections.append(render_pdf(member.analysis, member_media))
+        return _merge_thread_pdf(sections, thread)
+    except DocumentError:
+        raise
+    except Exception as error:
+        raise DocumentError("Could not render the thread PDF.") from error

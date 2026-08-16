@@ -23,6 +23,7 @@ from .models import (
     MediaType,
     PostMetadata,
     QualityOption,
+    Scope,
 )
 
 ALLOWED_X_HOSTS = {
@@ -117,7 +118,7 @@ def gallery_command(url: str, *, dump_json: bool = True) -> list[str]:
         "-o",
         "extractor.twitter.conversations=false",
         "-o",
-        "extractor.twitter.replies=false",
+        "extractor.twitter.replies=true",
         "-o",
         "extractor.twitter.size=[\"orig\",\"4096x4096\",\"large\"]",
         "-o",
@@ -230,6 +231,25 @@ def _attachment_role(metadata: dict) -> AttachmentRole:
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _optional_post_id(value: object) -> str | None:
+    if isinstance(value, str) and value.strip().isdigit():
+        return value.strip()
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return str(value)
+    return None
+
+
+def _optional_count(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        count = int(value)
+        return count if count > 0 else None
+    return None
 
 
 def _source_id(value: object) -> str | None:
@@ -354,7 +374,7 @@ async def quality_options(entry: dict) -> list[QualityOption]:
     return options
 
 
-async def analyze_url(value: str) -> Analysis:
+async def analyze_url(value: str, *, scope: Scope = Scope.POST) -> Analysis:
     url, post_id = normalize_x_url(value)
     capture_path = Path(tempfile.gettempdir()) / f"crxte-raw-{uuid.uuid4().hex}.json"
     try:
@@ -388,6 +408,13 @@ async def analyze_url(value: str) -> Analysis:
             or ""
         ),
         posted_at=str(gallery_post.get("date") or "") or None,
+        reply_to_post_id=_optional_post_id(gallery_post.get("reply_id")),
+        reply_to_author=_optional_text(gallery_post.get("reply_to")),
+        conversation_id=_optional_post_id(gallery_post.get("conversation_id")),
+        quoted_post_id=_optional_post_id(gallery_post.get("quote_id")),
+        reposted_post_id=_optional_post_id(gallery_post.get("retweet_id")),
+        reply_count=_optional_count(gallery_post.get("reply_count")),
+        quote_count=_optional_count(gallery_post.get("quote_count")),
     )
     content_kind = ContentKind.ARTICLE if article else ContentKind.POST
 
@@ -453,7 +480,7 @@ async def analyze_url(value: str) -> Analysis:
         if gallery_error:
             raise gallery_error
         raise AnalysisError("The X media extractor could not read this post.")
-    return Analysis(
+    analysis = Analysis(
         id=uuid.uuid4().hex,
         url=url,
         post=post,
@@ -461,6 +488,11 @@ async def analyze_url(value: str) -> Analysis:
         content_kind=content_kind,
         article=article,
     )
+    if scope == Scope.THREAD:
+        from .thread import build_thread
+
+        analysis.thread = await build_thread(analysis)
+    return analysis
 
 
 def find_resolved_item(items: Iterable[ResolvedMedia], index: int) -> ResolvedMedia | None:

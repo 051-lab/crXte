@@ -23,6 +23,8 @@ from .documents import (
     markdown_assets_name,
     render_markdown,
     render_pdf,
+    render_thread_markdown,
+    render_thread_pdf,
 )
 from .extractors import (
     TWIMG_HOSTS,
@@ -32,7 +34,13 @@ from .extractors import (
     resolve_gallery_media,
 )
 from .fidelity import FidelityReport, as_job_issues, evaluate_export
-from .layout import LayoutError, build_export_layout, media_filename
+from .layout import (
+    LayoutError,
+    build_export_layout,
+    build_thread_export_layout,
+    media_filename,
+    thread_media_name,
+)
 from .models import (
     Analysis,
     Attachment,
@@ -330,6 +338,9 @@ class DownloadQueue:
             job.error = "The saved analysis is missing. Analyze the link again."
             self.database.save_job(job)
             return
+        if analysis.thread:
+            await self._execute_thread(job, analysis)
+            return
         outputs = set(job.outputs)
         wants_documents = bool(outputs & {OutputFormat.MARKDOWN, OutputFormat.PDF})
         if (
@@ -516,6 +527,199 @@ class DownloadQueue:
             job.phase = _phase_with_fidelity(
                 len(job.completed_files), fidelity_report
             )
+            job.progress = 100
+            job.speed = None
+            job.eta = None
+        except DownloadCancelled:
+            job.status = JobStatus.CANCELLED
+            job.phase = "Cancelled · partial data kept"
+            job.speed = None
+            job.eta = None
+        except (
+            DocumentError,
+            QueueError,
+            VerificationError,
+            httpx.HTTPError,
+            OSError,
+        ) as error:
+            job.status = JobStatus.FAILED
+            job.phase = "Export failed"
+            job.error = str(error)
+            job.speed = None
+            job.eta = None
+        finally:
+            self._active_process = None
+            self._active_job_id = None
+            job.worker_pid = None
+            job.worker_pgid = None
+            job.heartbeat_at = None
+            self.database.save_job(job)
+
+    async def _execute_thread(self, job: Job, analysis: Analysis) -> None:
+        thread = analysis.thread
+        if not thread:
+            job.status = JobStatus.FAILED
+            job.phase = "Export failed"
+            job.error = "This analysis has no author-thread data. Analyze again in thread scope."
+            self.database.save_job(job)
+            return
+        outputs = set(job.outputs)
+        wants_documents = bool(outputs & {OutputFormat.MARKDOWN, OutputFormat.PDF})
+        try:
+            layout = build_thread_export_layout(Path(job.destination), thread)
+        except LayoutError as error:
+            job.status = JobStatus.FAILED
+            job.phase = "Export failed"
+            job.error = str(error)
+            self.database.save_job(job)
+            return
+        if job.output_dir and Path(job.output_dir) != layout.output_dir:
+            job.status = JobStatus.FAILED
+            job.phase = "Export failed"
+            job.error = "The saved thread output folder no longer matches this analysis."
+            self.database.save_job(job)
+            return
+        job.output_dir = str(layout.output_dir)
+        self._active_job_id = job.id
+        self._cancel_requested = False
+        self._last_progress_save = 0.0
+        self._last_saved_progress = -1.0
+        self._pause_gate.set()
+        job.status = JobStatus.RUNNING
+        job.phase = "Preparing thread folder"
+        job.error = None
+        job.completed_steps = 0
+        self.database.save_job(job)
+        try:
+            layout.output_dir.mkdir(parents=True, exist_ok=True)
+            if not os.access(layout.output_dir, os.W_OK):
+                raise QueueError("The thread output folder is not writable.")
+            needs_media = OutputFormat.MEDIA in outputs or (
+                wants_documents and job.include_document_media
+            )
+            downloads: list[tuple[Analysis, Attachment]] = []
+            for member in thread.members:
+                for attachment in member.analysis.attachments:
+                    downloads.append((member.analysis, attachment))
+            if not needs_media:
+                downloads = []
+            if needs_media:
+                job.total_steps = len(downloads)
+            if wants_documents:
+                job.total_steps += int(OutputFormat.MARKDOWN in outputs) + int(
+                    OutputFormat.PDF in outputs
+                )
+            if not downloads and not wants_documents:
+                raise QueueError("Nothing to export for this thread.")
+
+            completed_bytes = 0
+            media_by_post: dict[str, dict[str, Path]] = {}
+            for member_analysis, attachment in downloads:
+                await self._checkpoint()
+                layout.media_dir.mkdir(parents=True, exist_ok=True)
+                job.current_attachment = attachment.index
+                quality = (
+                    selected_quality(
+                        attachment, AttachmentSelection(attachment_id=attachment.id)
+                    )
+                    if attachment.media_type != MediaType.PHOTO
+                    else None
+                )
+                target = layout.media_dir / thread_media_name(
+                    member_analysis.post.post_id, media_filename(attachment, quality)
+                )
+                job.phase = (
+                    f"Downloading media {attachment.index} of "
+                    f"{len(downloads)} for post {member_analysis.post.post_id}"
+                )
+                self.database.save_job(job)
+                if attachment.media_type == MediaType.PHOTO:
+                    path, actual = await self._download_photo(
+                        job,
+                        member_analysis,
+                        attachment,
+                        layout.media_dir,
+                        completed_bytes,
+                        target=target,
+                    )
+                else:
+                    path, actual = await self._download_video(
+                        job,
+                        member_analysis,
+                        attachment,
+                        quality,
+                        layout.media_dir,
+                        completed_bytes,
+                        target_base=target.with_suffix(""),
+                    )
+                media_by_post.setdefault(member_analysis.post.post_id, {})[
+                    attachment.id
+                ] = path
+                if str(path) not in job.completed_files:
+                    job.completed_files.append(str(path))
+                completed_bytes += actual or 0
+                self._complete_step(job, completed_bytes)
+
+            job.current_attachment = None
+            document_media_by_post = media_by_post if job.include_document_media else {}
+            member_reports: list[FidelityReport] = []
+            markdown_bytes: bytes | None = None
+            pdf_bytes: bytes | None = None
+            if OutputFormat.MARKDOWN in outputs:
+                await self._checkpoint()
+                job.phase = "Rendering thread Markdown"
+                self.database.save_job(job)
+                markdown_bytes = await asyncio.to_thread(
+                    render_thread_markdown, thread, document_media_by_post
+                )
+                await self._checkpoint()
+                await asyncio.to_thread(
+                    self._write_document,
+                    layout.markdown_path,
+                    markdown_bytes,
+                    verify_markdown,
+                )
+                if str(layout.markdown_path) not in job.completed_files:
+                    job.completed_files.append(str(layout.markdown_path))
+                self._complete_step(job, completed_bytes)
+            if OutputFormat.PDF in outputs:
+                await self._checkpoint()
+                job.phase = "Rendering thread PDF"
+                self.database.save_job(job)
+                pdf_bytes = await asyncio.to_thread(
+                    render_thread_pdf, thread, document_media_by_post
+                )
+                await self._checkpoint()
+                await asyncio.to_thread(
+                    self._write_document, layout.pdf_path, pdf_bytes, verify_pdf
+                )
+                if str(layout.pdf_path) not in job.completed_files:
+                    job.completed_files.append(str(layout.pdf_path))
+                self._complete_step(job, completed_bytes)
+            for member in thread.members:
+                member_media = document_media_by_post.get(member.post_id, {})
+                member_markdown: bytes | None = None
+                member_pdf: bytes | None = None
+                if member.analysis.content_kind == ContentKind.ARTICLE:
+                    if OutputFormat.MARKDOWN in outputs:
+                        member_markdown = await asyncio.to_thread(
+                            render_markdown, member.analysis, member_media
+                        )
+                    if OutputFormat.PDF in outputs:
+                        member_pdf = await asyncio.to_thread(
+                            render_pdf, member.analysis, member_media
+                        )
+                report = await self._audit_fidelity(
+                    member.analysis, member_media, member_markdown, member_pdf
+                )
+                member_reports.append(report)
+            fidelity_report = FidelityReport(
+                tuple(issue for report in member_reports for issue in report.issues)
+            )
+            job.fidelity_issues = as_job_issues(fidelity_report)
+
+            job.status = JobStatus.COMPLETED
+            job.phase = _phase_with_fidelity(len(job.completed_files), fidelity_report)
             job.progress = 100
             job.speed = None
             job.eta = None

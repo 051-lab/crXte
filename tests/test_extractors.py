@@ -51,6 +51,7 @@ def test_gallery_command_ignores_global_config_and_cookies() -> None:
     assert "--cookies" not in command
     assert "--cookies-from-browser" not in command
     assert "extractor.twitter.text-tweets=true" in command
+    assert "extractor.twitter.replies=true" in command
     assert 'extractor.twitter.articles=["meta","html","cover","media"]' in command
 
 

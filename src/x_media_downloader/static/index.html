@@ -43,6 +43,18 @@
           <span>Analyze link</span><span class="button-key">↵</span>
         </button>
       </form>
+      <fieldset class="scope-picker">
+        <legend class="sr-only">Export scope</legend>
+        <label>
+          <input type="radio" name="scope" value="post" checked>
+          <span>This post</span>
+        </label>
+        <label>
+          <input type="radio" name="scope" value="thread">
+          <span>Author thread</span>
+        </label>
+        <p class="field-note" id="scope-note" hidden>Also exports the same author's earlier posts in this reply chain. Replies below the post are not publicly enumerable without cookies, so they are never included.</p>
+      </fieldset>
       <div class="command-meta">
         <span>No account or cookies</span>
         <span>Media · Markdown · PDF</span>
@@ -71,6 +83,11 @@
           <p class="eyebrow">X Article</p>
           <h3 id="article-title"></h3>
           <p id="article-description"></p>
+        </section>
+        <section class="thread-summary" id="thread-summary" aria-labelledby="thread-title" hidden>
+          <p class="eyebrow">Author thread</p>
+          <h3 id="thread-title"></h3>
+          <p id="thread-description"></p>
         </section>
 
         <section class="output-destination" aria-labelledby="output-folder-label">

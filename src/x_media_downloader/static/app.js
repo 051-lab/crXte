@@ -15,6 +15,9 @@ const elements = {
   postAuthor: $("#post-author"), postHandle: $("#post-handle"), postId: $("#post-id"),
   postText: $("#post-text"), articleSummary: $("#article-summary"),
   articleTitle: $("#article-title"), articleDescription: $("#article-description"),
+  scopePost: $('input[name="scope"][value="post"]'), scopeThread: $('input[name="scope"][value="thread"]'),
+  scopeNote: $("#scope-note"), threadSummary: $("#thread-summary"),
+  threadTitle: $("#thread-title"), threadDescription: $("#thread-description"),
   outputMedia: $("#output-media"), outputMarkdown: $("#output-markdown"),
   outputPdf: $("#output-pdf"), documentMediaOption: $("#document-media-option"),
   includeDocumentMedia: $("#include-document-media"), attachmentHeading: $("#attachment-heading"),
@@ -226,6 +229,23 @@ function clearAnalysis() {
   elements.attachments.replaceChildren();
 }
 
+function selectedScope() {
+  return elements.scopeThread.checked ? "thread" : "post";
+}
+
+elements.scopeThread.addEventListener("change", () => {
+  elements.scopeNote.hidden = !elements.scopeThread.checked;
+  if (state.analyzedUrl && state.analysis) {
+    elements.form.requestSubmit();
+  }
+});
+elements.scopePost.addEventListener("change", () => {
+  elements.scopeNote.hidden = true;
+  if (state.analyzedUrl && state.analysis) {
+    elements.form.requestSubmit();
+  }
+});
+
 elements.form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const url = elements.input.value.trim();
@@ -235,7 +255,10 @@ elements.form.addEventListener("submit", async (event) => {
   elements.analyzeButton.disabled = true;
   elements.analyzeButton.querySelector("span").textContent = "Resolving post…";
   try {
-    const analysis = await api("/api/analyze", { method: "POST", body: JSON.stringify({ url }) });
+    const analysis = await api("/api/analyze", {
+      method: "POST",
+      body: JSON.stringify({ url, scope: selectedScope() }),
+    });
     state.analysis = analysis;
     state.analyzedUrl = url;
     renderAnalysis();
@@ -269,6 +292,14 @@ function renderAnalysis() {
   elements.articleSummary.hidden = !isArticle;
   elements.articleTitle.textContent = article?.title || "Untitled article";
   elements.articleDescription.textContent = article?.description || article?.excerpt || "Export the complete article as a portable document.";
+  const thread = analysis.thread || null;
+  elements.threadSummary.hidden = !thread;
+  if (thread) {
+    elements.threadTitle.textContent =
+      `${thread.members.length} post${thread.members.length === 1 ? "" : "s"} · root ${thread.root_post_id}`;
+    elements.threadDescription.textContent =
+      thread.issues.map((issue) => issue.message).join(" ") || "Complete author thread context.";
+  }
   updateOutputFolder();
 
   elements.outputMedia.checked = attachments.length > 0;
