@@ -601,6 +601,8 @@ class DownloadQueue:
             for member in thread.members:
                 for attachment in member.analysis.attachments:
                     downloads.append((member.analysis, attachment))
+            if not needs_media:
+                downloads = []
             if needs_media:
                 job.total_steps = len(downloads)
             if wants_documents:
