@@ -15,6 +15,7 @@ from x_media_downloader.models import (
     Analysis,
     Attachment,
     MediaType,
+    OutputFormat,
     PostMetadata,
     Scope,
 )
@@ -534,5 +535,321 @@ async def test_thread_job_with_article_member_records_no_false_fidelity_errors(
     completed = database.get_job(job.id)
     assert completed is not None
     assert completed.status == JobStatus.COMPLETED
+    assert completed.fidelity_issues == []
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_job_without_media_and_document_media_does_not_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from x_media_downloader.database import Database
+    from x_media_downloader.models import Job, JobStatus, OutputFormat
+    from x_media_downloader.queue import DownloadQueue
+
+    root = _analysis("111")
+    middle = _analysis(
+        "222",
+        reply_to="111",
+        reply_to_author="claude",
+        attachments=[Attachment(id="a-1", index=1, media_type=MediaType.PHOTO, extension="jpg")],
+    )
+    focal = _analysis("333", reply_to="222", reply_to_author="claude")
+    thread = await build_thread(focal, fetch=make_fetch(root, middle))
+    focal.thread = thread
+    database = Database(tmp_path / "state.db")
+    database.save_analysis(focal)
+    job = Job(
+        id="job-thread-nodl",
+        analysis_id=focal.id,
+        url=focal.url,
+        post=focal.post,
+        selections=[],
+        outputs=[OutputFormat.MARKDOWN],
+        include_document_media=False,
+        destination=str(tmp_path),
+        layout_version=2,
+    )
+    database.save_job(job)
+
+    async def unexpected_download(self: object, *args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            "thread media must not download when media output and "
+            "document media are both disabled"
+        )
+
+    monkeypatch.setattr(DownloadQueue, "_download_photo", unexpected_download)
+    monkeypatch.setattr(DownloadQueue, "_download_video", unexpected_download)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.progress == 100
+    out = tmp_path / "@claude" / "111"
+    assert (out / "thread.md").exists()
+    assert not (out / "media").exists()
+    assert completed.fidelity_issues == []
+    assert completed.completed_files == [str(out / "thread.md")]
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_job_media_download_follows_output_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from x_media_downloader.database import Database
+    from x_media_downloader.models import Job, JobStatus, OutputFormat
+    from x_media_downloader.queue import DownloadQueue
+
+    root = _analysis("111")
+    middle = _analysis(
+        "222",
+        reply_to="111",
+        reply_to_author="claude",
+        attachments=[Attachment(id="a-1", index=1, media_type=MediaType.PHOTO, extension="jpg")],
+    )
+    focal = _analysis("333", reply_to="222", reply_to_author="claude")
+    thread = await build_thread(focal, fetch=make_fetch(root, middle))
+    focal.thread = thread
+    database = Database(tmp_path / "state.db")
+    database.save_analysis(focal)
+    job = Job(
+        id="job-thread-sel",
+        analysis_id=focal.id,
+        url=focal.url,
+        post=focal.post,
+        selections=[],
+        outputs=[OutputFormat.MEDIA],
+        include_document_media=False,
+        destination=str(tmp_path),
+        layout_version=2,
+    )
+    database.save_job(job)
+
+    async def fake_download_photo(
+        self: object,
+        job: Job,
+        analysis: Analysis,
+        attachment: Attachment,
+        destination: Path,
+        completed_base: int,
+        **kwargs: object,
+    ) -> tuple[Path, int]:
+        del self, job, analysis, destination, completed_base
+        target = kwargs.get("target")
+        target = Path(target) if target else Path("01.jpg")
+        target.write_bytes(PNG_BYTES)
+        return target, len(PNG_BYTES)
+
+    monkeypatch.setattr(DownloadQueue, "_download_photo", fake_download_photo)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    out = tmp_path / "@claude" / "111"
+    assert (out / "media" / "222-01.jpg").exists()
+    assert not (out / "thread.md").exists()
+    assert not (out / "thread.pdf").exists()
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_job_document_media_inclusion_follows_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from x_media_downloader.database import Database
+    from x_media_downloader.models import Job, JobStatus, OutputFormat
+    from x_media_downloader.queue import DownloadQueue
+
+    root = _analysis("111")
+    middle = _analysis(
+        "222",
+        reply_to="111",
+        reply_to_author="claude",
+        attachments=[Attachment(id="a-1", index=1, media_type=MediaType.PHOTO, extension="jpg")],
+    )
+    focal = _analysis("333", reply_to="222", reply_to_author="claude")
+    thread = await build_thread(focal, fetch=make_fetch(root, middle))
+    focal.thread = thread
+    database = Database(tmp_path / "state.db")
+    database.save_analysis(focal)
+    job = Job(
+        id="job-thread-docmedia",
+        analysis_id=focal.id,
+        url=focal.url,
+        post=focal.post,
+        selections=[],
+        outputs=[OutputFormat.MARKDOWN, OutputFormat.PDF],
+        include_document_media=True,
+        destination=str(tmp_path),
+        layout_version=2,
+    )
+    database.save_job(job)
+
+    async def fake_download_photo(
+        self: object,
+        job: Job,
+        analysis: Analysis,
+        attachment: Attachment,
+        destination: Path,
+        completed_base: int,
+        **kwargs: object,
+    ) -> tuple[Path, int]:
+        del self, job, analysis, destination, completed_base
+        target = kwargs.get("target")
+        target = Path(target) if target else Path("01.jpg")
+        target.write_bytes(PNG_BYTES)
+        return target, len(PNG_BYTES)
+
+    monkeypatch.setattr(DownloadQueue, "_download_photo", fake_download_photo)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    out = tmp_path / "@claude" / "111"
+    markdown = (out / "thread.md").read_text()
+    assert "media/222-01.jpg" in markdown
+    assert (out / "media" / "222-01.jpg").exists()
+    database.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_job_without_attachments_still_exports_documents(
+    tmp_path: Path,
+) -> None:
+    from x_media_downloader.database import Database
+    from x_media_downloader.models import Job, JobStatus, OutputFormat
+    from x_media_downloader.queue import DownloadQueue
+
+    root = _analysis("111")
+    focal = _analysis("333", reply_to="111", reply_to_author="claude")
+    thread = await build_thread(focal, fetch=make_fetch(root))
+    focal.thread = thread
+    database = Database(tmp_path / "state.db")
+    database.save_analysis(focal)
+    job = Job(
+        id="job-thread-noatt",
+        analysis_id=focal.id,
+        url=focal.url,
+        post=focal.post,
+        selections=[],
+        outputs=[OutputFormat.MARKDOWN, OutputFormat.PDF],
+        include_document_media=True,
+        destination=str(tmp_path),
+        layout_version=2,
+    )
+    database.save_job(job)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.progress == 100
+    out = tmp_path / "@claude" / "111"
+    assert (out / "thread.md").exists()
+    assert (out / "thread.pdf").exists()
+    assert not (out / "media").exists()
+    assert completed.fidelity_issues == []
+    database.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outputs", "include_document_media", "expected_downloads", "expected_docs"),
+    [
+        ([OutputFormat.MARKDOWN], False, 0, {"thread.md"}),
+        ([OutputFormat.PDF], False, 0, {"thread.pdf"}),
+        ([OutputFormat.MARKDOWN, OutputFormat.PDF], False, 0, {"thread.md", "thread.pdf"}),
+        ([OutputFormat.MARKDOWN], True, 1, {"thread.md"}),
+        ([OutputFormat.PDF], True, 1, {"thread.pdf"}),
+        ([OutputFormat.MARKDOWN, OutputFormat.PDF], True, 1, {"thread.md", "thread.pdf"}),
+        ([OutputFormat.MEDIA], False, 1, set()),
+        ([OutputFormat.MEDIA, OutputFormat.MARKDOWN], False, 1, {"thread.md"}),
+        (
+            [OutputFormat.MEDIA, OutputFormat.MARKDOWN, OutputFormat.PDF],
+            True,
+            1,
+            {"thread.md", "thread.pdf"},
+        ),
+    ],
+)
+async def test_thread_job_output_selection_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outputs: list[OutputFormat],
+    include_document_media: bool,
+    expected_downloads: int,
+    expected_docs: set[str],
+) -> None:
+    from x_media_downloader.database import Database
+    from x_media_downloader.models import Job, JobStatus
+    from x_media_downloader.queue import DownloadQueue
+
+    root = _analysis("111")
+    middle = _analysis(
+        "222",
+        reply_to="111",
+        reply_to_author="claude",
+        attachments=[Attachment(id="a-1", index=1, media_type=MediaType.PHOTO, extension="jpg")],
+    )
+    focal = _analysis("333", reply_to="222", reply_to_author="claude")
+    thread = await build_thread(focal, fetch=make_fetch(root, middle))
+    focal.thread = thread
+    database = Database(tmp_path / "state.db")
+    database.save_analysis(focal)
+    job = Job(
+        id="job-thread-sweep",
+        analysis_id=focal.id,
+        url=focal.url,
+        post=focal.post,
+        selections=[],
+        outputs=outputs,
+        include_document_media=include_document_media,
+        destination=str(tmp_path),
+        layout_version=2,
+    )
+    database.save_job(job)
+
+    calls: list[str] = []
+
+    async def fake_download_photo(
+        self: object,
+        job: Job,
+        analysis: Analysis,
+        attachment: Attachment,
+        destination: Path,
+        completed_base: int,
+        **kwargs: object,
+    ) -> tuple[Path, int]:
+        del self, job, analysis, destination, completed_base
+        calls.append(str(kwargs.get("target", "")))
+        target = Path(kwargs["target"])
+        target.write_bytes(PNG_BYTES)
+        return target, len(PNG_BYTES)
+
+    monkeypatch.setattr(DownloadQueue, "_download_photo", fake_download_photo)
+
+    queue = DownloadQueue(database)
+    await queue._execute(job)
+
+    completed = database.get_job(job.id)
+    assert completed is not None
+    assert completed.status == JobStatus.COMPLETED
+    assert len(calls) == expected_downloads
+    assert completed.progress == 100
+    out = tmp_path / "@claude" / "111"
+    assert {p.name for p in out.glob("thread.*")} == expected_docs
+    assert (out / "media").exists() == (expected_downloads > 0)
     assert completed.fidelity_issues == []
     database.close()
